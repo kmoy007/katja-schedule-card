@@ -8,7 +8,7 @@
  * Dark theme, color-coded by family member, flight/drive badges.
  */
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.4.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B",
@@ -20,6 +20,7 @@ const PERSON_COLORS = {
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_SHORT_MON = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 class KatjaScheduleCard extends HTMLElement {
@@ -265,25 +266,25 @@ class KatjaScheduleCard extends HTMLElement {
   // ====================== CALENDAR GRID VIEW ======================
 
   _renderCalendarGrid(days, grouped) {
-    // Split into weeks (rows of 7)
     const weeks = [];
-    // Pad to start on Sunday
     const firstDate = new Date(days[0] + "T12:00:00");
-    const padBefore = firstDate.getDay();
+    // Monday = 0 offset. JS getDay(): Mon=1..Sun=0. Convert so Mon=0.
+    const jsDay = firstDate.getDay();
+    const padBefore = jsDay === 0 ? 6 : jsDay - 1; // days to pad back to Monday
+    const _fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
     const allDays = [];
     for (let i = padBefore; i > 0; i--) {
-      const d = new Date(firstDate);
-      d.setDate(d.getDate() - i);
-      allDays.push({ ds: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`, outside: true });
+      const d = new Date(firstDate); d.setDate(d.getDate() - i);
+      allDays.push({ ds: _fmt(d), outside: true });
     }
     for (const ds of days) {
       allDays.push({ ds, outside: false });
     }
-    // Pad to end of week
     while (allDays.length % 7 !== 0) {
       const last = new Date(allDays[allDays.length-1].ds + "T12:00:00");
       last.setDate(last.getDate() + 1);
-      allDays.push({ ds: `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,"0")}-${String(last.getDate()).padStart(2,"0")}`, outside: true });
+      allDays.push({ ds: _fmt(last), outside: true });
     }
     for (let i = 0; i < allDays.length; i += 7) {
       weeks.push(allDays.slice(i, i + 7));
@@ -292,7 +293,7 @@ class KatjaScheduleCard extends HTMLElement {
     return `
       <div class="cal-grid">
         <div class="cal-header-row">
-          ${DAY_SHORT.map(d => `<div class="cal-header-cell">${d}</div>`).join("")}
+          ${DAY_SHORT_MON.map(d => `<div class="cal-header-cell">${d}</div>`).join("")}
         </div>
         ${weeks.map(week => `
           <div class="cal-week">
@@ -309,14 +310,13 @@ class KatjaScheduleCard extends HTMLElement {
                 <div class="${cls}">
                   <div class="cal-date">${d.getDate()}</div>
                   <div class="cal-events">
-                    ${evts.slice(0, 6).map(ev => {
+                    ${evts.map(ev => {
                       const isDrive = this._isDrive(ev.summary || "");
                       return `<div class="cal-event${isDrive ? " cal-drive" : ""}" style="border-left: 3px solid ${ev._color || "#888"}">
                         <span class="cal-event-time">${this._formatTimeShort(ev)}</span>
                         <span class="cal-event-text">${ev.summary || ""}</span>
                       </div>`;
                     }).join("")}
-                    ${evts.length > 6 ? `<div class="cal-more">+${evts.length - 6} more</div>` : ""}
                   </div>
                 </div>`;
             }).join("")}
@@ -414,10 +414,10 @@ class KatjaScheduleCard extends HTMLElement {
         color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
         padding: 4px 0;
       }
-      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
       .cal-day {
         background: rgba(255,255,255,0.03); border-radius: 8px;
-        padding: 6px; min-height: 100px; position: relative;
+        padding: 6px; position: relative;
       }
       .cal-today { background: var(--today-bg); outline: 2px solid #4ECDC4; outline-offset: -2px; }
       .cal-outside { opacity: 0.3; }
@@ -437,7 +437,6 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
       .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: #d0d0d0; }
       .cal-drive { opacity: 0.5; font-style: italic; }
-      .cal-more { font-size: 10px; color: var(--muted); padding: 2px 6px; }
     `;
   }
 }
