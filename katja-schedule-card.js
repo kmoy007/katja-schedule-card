@@ -7,7 +7,7 @@
  *   - Calendar: 2-week Mon–Sun grid
  */
 
-const CARD_VERSION = "0.6.0";
+const CARD_VERSION = "0.6.1";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -63,7 +63,17 @@ class KatjaScheduleCard extends HTMLElement {
         }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
     }
-    this._events = all;
+    // Deduplicate: multi-person events appear in multiple calendars.
+    // Keep the first occurrence (preserves its color).
+    const seen = new Set();
+    const deduped = [];
+    for (const ev of all) {
+      const key = `${ev.summary||""}|${ev.start?.dateTime||ev.start?.date||""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(ev);
+    }
+    this._events = deduped;
     this._render();
   }
 
