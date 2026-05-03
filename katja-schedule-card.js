@@ -5,7 +5,7 @@
  * Tap any event to see details. Drive/flight events get a "Recheck" button.
  */
 
-const CARD_VERSION = "0.7.0";
+const CARD_VERSION = "0.8.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -167,51 +167,38 @@ class KatjaScheduleCard extends HTMLElement {
   // ====================== RECHECK ======================
 
   async _recheckDrive(ev) {
-    if (!this._config.api_url || !this._config.api_token) {
-      this._recheckResult = { ok: false, error: "api_url and api_token not configured in card" };
-      this._render(); return;
-    }
+    if (!this._hass) return;
     this._recheckLoading = true; this._render();
     try {
       const loc = ev.location || ev.description || "";
       const parts = loc.split("→").map(s => s.trim());
       const origin = parts[0] || "home";
       const destination = parts[1]?.split(".")[0]?.split(",")[0] || parts[0] || "";
-      const resp = await fetch(`${this._config.api_url}/api/actions/refresh-drive`, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${this._config.api_token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ origin, destination }),
+      this._recheckResult = await this._hass.callWS({
+        type: "katja_schedule/refresh_drive",
+        origin, destination,
       });
-      this._recheckResult = await resp.json();
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
     this._recheckLoading = false; this._render();
   }
 
   async _recheckFlight(ev) {
-    if (!this._config.api_url || !this._config.api_token) {
-      this._recheckResult = { ok: false, error: "api_url and api_token not configured in card" };
-      this._render(); return;
-    }
+    if (!this._hass) return;
     this._recheckLoading = true; this._render();
     try {
       const desc = ev.description || ev.summary || "";
       const flightMatch = desc.match(/Flight:\s*(\S+)\s+(\S+)→(\S+)/);
-      const body = {};
+      const msg = { type: "katja_schedule/refresh_flight" };
       if (flightMatch) {
-        body.flight_number = flightMatch[1];
-        body.origin = flightMatch[2];
-        body.destination = flightMatch[3];
+        msg.flight_number = flightMatch[1];
+        msg.origin = flightMatch[2];
+        msg.destination = flightMatch[3];
       } else {
         const numMatch = (ev.summary || "").match(/\b([A-Z]{2}\d{1,4})\b/);
-        if (numMatch) body.flight_number = numMatch[1];
+        msg.flight_number = numMatch ? numMatch[1] : "unknown";
       }
-      body.date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
-      const resp = await fetch(`${this._config.api_url}/api/actions/refresh-flight`, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${this._config.api_token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      this._recheckResult = await resp.json();
+      msg.date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      this._recheckResult = await this._hass.callWS(msg);
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
     this._recheckLoading = false; this._render();
   }
