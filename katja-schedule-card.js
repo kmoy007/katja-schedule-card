@@ -8,7 +8,7 @@
  * Dark theme, color-coded by family member, flight/drive badges.
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.4.1";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B",
@@ -447,7 +447,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "katja-schedule-card",
   name: `Katja Schedule v${CARD_VERSION}`,
-  description: "14-day family schedule with schedule/calendar views, color-coded events, flight badges.",
+  description: `v${CARD_VERSION} — 14-day family schedule with schedule/calendar views, color-coded events, flight badges.`,
   preview: false,
 });
 
