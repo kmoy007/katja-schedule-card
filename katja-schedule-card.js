@@ -8,7 +8,7 @@
  * Dark theme, color-coded by family member, flight/drive badges.
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.3.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B",
@@ -198,6 +198,7 @@ class KatjaScheduleCard extends HTMLElement {
             <div class="meta">
               ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
               ${syncText ? `<span>Synced ${syncText}</span>` : ""}
+              <span class="version">v${CARD_VERSION}</span>
             </div>
           </div>
           ${this._view === "schedule"
@@ -348,6 +349,7 @@ class KatjaScheduleCard extends HTMLElement {
       .header .title { font-size: 22px; font-weight: 700; color: #fff; }
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--muted); }
       .header .badge { background: #E0A020; color: #1e1e2e; font-weight: 700; font-size: 11px; padding: 3px 10px; border-radius: 12px; }
+      .header .version { font-size: 10px; color: rgba(255,255,255,0.2); }
       .view-toggle {
         display: flex; background: rgba(255,255,255,0.06); border-radius: 20px; padding: 3px;
       }
@@ -445,7 +447,7 @@ customElements.define("katja-schedule-card", KatjaScheduleCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "katja-schedule-card",
-  name: "Katja Schedule",
+  name: `Katja Schedule v${CARD_VERSION}`,
   description: "14-day family schedule with schedule/calendar views, color-coded events, flight badges.",
   preview: false,
 });
