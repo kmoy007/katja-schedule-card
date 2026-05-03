@@ -1,27 +1,22 @@
 /**
  * Katja Schedule Card — custom Lovelace card for the Katja Schedule integration.
  *
- * Two views, toggled in the header:
- *   - Schedule: scrollable agenda with today/tomorrow dominant
- *   - Calendar: 2-week grid, days as columns, events as colored blocks
- *
- * Dark theme, color-coded by family member, flight/drive badges.
+ * Three views, toggled in the header:
+ *   - Overview (default): Today + Tomorrow side by side, 2-week calendar grid below
+ *   - Schedule: scrollable agenda starting from today
+ *   - Calendar: 2-week Mon–Sun grid
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.6.0";
 
 const PERSON_COLORS = {
-  katja: "#FF6B6B",
-  ken: "#4ECDC4",
-  caleb: "#45B7D1",
-  sam: "#96CEB4",
-  shared: "#FFEAA7",
+  katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
+  sam: "#96CEB4", shared: "#FFEAA7",
 };
 
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const DAY_SHORT_MON = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 class KatjaScheduleCard extends HTMLElement {
   constructor() {
@@ -32,137 +27,118 @@ class KatjaScheduleCard extends HTMLElement {
     this._events = [];
     this._lastFetch = 0;
     this._fetchInterval = 5 * 60 * 1000;
-    this._view = "schedule"; // "schedule" or "calendar"
+    this._view = "overview";
   }
 
   set hass(hass) {
     this._hass = hass;
-    const now = Date.now();
-    if (now - this._lastFetch > this._fetchInterval) {
-      this._fetchEvents();
-    }
+    if (Date.now() - this._lastFetch > this._fetchInterval) this._fetchEvents();
   }
 
   setConfig(config) {
-    if (!config.calendars || !config.calendars.length) {
-      throw new Error("Please define at least one calendar entity.");
-    }
-    this._config = { days: 14, title: "Family Schedule", ...config };
+    if (!config.calendars || !config.calendars.length) throw new Error("Define at least one calendar entity.");
+    this._config = { title: "Family Schedule", ...config };
     this._render();
   }
 
   getCardSize() { return 12; }
+
+  // ====================== DATA ======================
 
   async _fetchEvents() {
     if (!this._hass || !this._config.calendars) return;
     this._lastFetch = Date.now();
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const end = new Date(start);
-    end.setDate(end.getDate() + (this._config.days || 14));
-    const allEvents = [];
+    // Fetch enough to cover the Mon-aligned 2-week grid
+    const end = new Date(start); end.setDate(end.getDate() + 21);
+    const all = [];
     for (const cal of this._config.calendars) {
       try {
-        const events = await this._hass.callApi(
-          "GET", `calendars/${cal.entity}?start=${start.toISOString()}&end=${end.toISOString()}`
-        );
+        const events = await this._hass.callApi("GET",
+          `calendars/${cal.entity}?start=${start.toISOString()}&end=${end.toISOString()}`);
         for (const ev of events || []) {
-          allEvents.push({
-            ...ev,
-            _color: cal.color || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
-            _label: cal.label || cal.entity.split("_").pop(),
-          });
+          all.push({ ...ev, _color: cal.color || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
+                     _label: cal.label || cal.entity.split("_").pop() });
         }
-      } catch (e) {
-        console.warn(`Failed to fetch from ${cal.entity}:`, e);
-      }
+      } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
     }
-    this._events = allEvents;
+    this._events = all;
     this._render();
   }
 
   _groupByDate(events) {
-    const groups = {};
+    const g = {};
     for (const ev of events) {
-      const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
-      if (!dateStr) continue;
-      if (!groups[dateStr]) groups[dateStr] = [];
-      groups[dateStr].push(ev);
+      const ds = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      if (!ds) continue;
+      (g[ds] = g[ds] || []).push(ev);
     }
-    for (const d of Object.keys(groups)) {
-      groups[d].sort((a, b) =>
-        (a.start?.dateTime || a.start?.date || "").localeCompare(b.start?.dateTime || b.start?.date || "")
-      );
-    }
-    return groups;
+    for (const d of Object.keys(g))
+      g[d].sort((a,b) => (a.start?.dateTime||a.start?.date||"").localeCompare(b.start?.dateTime||b.start?.date||""));
+    return g;
+  }
+
+  // ====================== HELPERS ======================
+
+  _fmt(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+
+  _todayStr() { return this._fmt(new Date()); }
+  _tomorrowStr() { const t = new Date(); t.setDate(t.getDate()+1); return this._fmt(t); }
+  _isToday(ds) { return ds === this._todayStr(); }
+  _isTomorrow(ds) { return ds === this._tomorrowStr(); }
+
+  _formatDateHeader(ds) {
+    const d = new Date(ds+"T12:00:00"), day = DAY_NAMES[d.getDay()], month = MONTH_NAMES[d.getMonth()];
+    if (this._isToday(ds)) return `Today — ${day}, ${month} ${d.getDate()}`;
+    if (this._isTomorrow(ds)) return `Tomorrow — ${day}, ${month} ${d.getDate()}`;
+    return `${day}, ${month} ${d.getDate()}`;
   }
 
   _formatTime(ev) {
     const dt = ev.start?.dateTime;
     if (!dt) return "All day";
     const d = new Date(dt);
-    let h = d.getHours(), m = d.getMinutes();
-    const ampm = h >= 12 ? "PM" : "AM";
+    let h = d.getHours(), m = d.getMinutes(), ampm = h >= 12 ? "PM" : "AM";
     if (h > 12) h -= 12; if (h === 0) h = 12;
     const mStr = m < 10 ? `0${m}` : m;
     const endDt = ev.end?.dateTime;
     if (endDt) {
       const ed = new Date(endDt);
-      let eh = ed.getHours(); const em = ed.getMinutes();
-      const eampm = eh >= 12 ? "PM" : "AM";
+      let eh = ed.getHours(), em = ed.getMinutes(), eampm = eh >= 12 ? "PM" : "AM";
       if (eh > 12) eh -= 12; if (eh === 0) eh = 12;
-      const emStr = em < 10 ? `0${em}` : em;
-      return ampm === eampm
-        ? `${h}:${mStr}–${eh}:${emStr} ${eampm}`
-        : `${h}:${mStr} ${ampm}–${eh}:${emStr} ${eampm}`;
+      return ampm === eampm ? `${h}:${mStr}–${eh}:${em<10?"0"+em:em} ${eampm}` : `${h}:${mStr} ${ampm}–${eh}:${em<10?"0"+em:em} ${eampm}`;
     }
     return `${h}:${mStr} ${ampm}`;
   }
 
   _formatTimeShort(ev) {
-    const dt = ev.start?.dateTime;
-    if (!dt) return "";
-    const d = new Date(dt);
-    let h = d.getHours(), m = d.getMinutes();
-    const ampm = h >= 12 ? "p" : "a";
+    const dt = ev.start?.dateTime; if (!dt) return "";
+    const d = new Date(dt); let h = d.getHours(), m = d.getMinutes(), ap = h >= 12 ? "p" : "a";
     if (h > 12) h -= 12; if (h === 0) h = 12;
-    return m === 0 ? `${h}${ampm}` : `${h}:${m < 10 ? "0" + m : m}${ampm}`;
-  }
-
-  _todayStr() {
-    const t = new Date();
-    return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
-  }
-  _isToday(ds) { return ds === this._todayStr(); }
-  _isTomorrow(ds) {
-    const t = new Date(); t.setDate(t.getDate()+1);
-    return ds === `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
-  }
-
-  _formatDateHeader(ds) {
-    const d = new Date(ds + "T12:00:00");
-    const day = DAY_NAMES[d.getDay()], month = MONTH_NAMES[d.getMonth()], date = d.getDate();
-    if (this._isToday(ds)) return `Today — ${day}, ${month} ${date}`;
-    if (this._isTomorrow(ds)) return `Tomorrow — ${day}, ${month} ${date}`;
-    return `${day}, ${month} ${date}`;
+    return m === 0 ? `${h}${ap}` : `${h}:${m<10?"0"+m:m}${ap}`;
   }
 
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
 
-  _getDays() {
-    // This Monday through next Sunday (14 days, Mon-aligned)
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const jsDay = today.getDay();
-    const mondayOffset = jsDay === 0 ? -6 : 1 - jsDay;
-    const thisMonday = new Date(today);
-    thisMonday.setDate(today.getDate() + mondayOffset);
+  _getDaysFromToday(n) {
+    const days = [], now = new Date();
+    for (let i = 0; i < n; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+      days.push(this._fmt(d));
+    }
+    return days;
+  }
+
+  _getMonAlignedDays() {
+    const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const jsDay = today.getDay(), offset = jsDay === 0 ? -6 : 1 - jsDay;
+    const mon = new Date(today); mon.setDate(today.getDate() + offset);
     const days = [];
     for (let i = 0; i < 14; i++) {
-      const d = new Date(thisMonday);
-      d.setDate(thisMonday.getDate() + i);
-      days.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);
+      const d = new Date(mon); d.setDate(mon.getDate() + i);
+      days.push(this._fmt(d));
     }
     return days;
   }
@@ -175,7 +151,7 @@ class KatjaScheduleCard extends HTMLElement {
     }
     if (this._hass && this._config.sensors?.sync) {
       const s = this._hass.states[this._config.sensors.sync];
-      if (s?.state) {
+      if (s?.state && s.state !== "unknown" && s.state !== "unavailable") {
         const mins = Math.round((Date.now() - new Date(s.state).getTime()) / 60000);
         syncText = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`;
       }
@@ -183,53 +159,73 @@ class KatjaScheduleCard extends HTMLElement {
     return { pendingCount, syncText };
   }
 
-  _switchView(view) {
-    this._view = view;
-    this._render();
-  }
+  _switchView(v) { this._view = v; this._render(); }
+
+  // ====================== RENDER ======================
 
   _render() {
     if (!this.shadowRoot) return;
     const grouped = this._groupByDate(this._events);
-    const days = this._getDays();
     const { pendingCount, syncText } = this._getSensorData();
+
+    let body = "";
+    if (this._view === "overview") body = this._renderOverview(grouped);
+    else if (this._view === "schedule") body = this._renderSchedule(grouped);
+    else body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
 
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
-      <ha-card>
-        <div class="card">
-          <div class="header">
-            <span class="title">${this._config.title || "Family Schedule"}</span>
-            <div class="view-toggle">
-              <button class="toggle-btn ${this._view === "schedule" ? "active" : ""}" data-view="schedule">Schedule</button>
-              <button class="toggle-btn ${this._view === "calendar" ? "active" : ""}" data-view="calendar">Calendar</button>
-            </div>
-            <div class="meta">
-              ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
-              ${syncText ? `<span>Synced ${syncText}</span>` : ""}
-              <span class="version">v${CARD_VERSION}</span>
-            </div>
+      <ha-card><div class="card">
+        <div class="header">
+          <span class="title">${this._config.title || "Family Schedule"}</span>
+          <div class="view-toggle">
+            ${["overview","schedule","calendar"].map(v =>
+              `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${v[0].toUpperCase()+v.slice(1)}</button>`
+            ).join("")}
           </div>
-          ${this._view === "schedule"
-            ? `<div class="days">${days.map(ds => this._renderDay(ds, grouped[ds] || [])).join("")}</div>`
-            : this._renderCalendarGrid(days, grouped)
-          }
+          <div class="meta">
+            ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
+            ${syncText ? `<span>Synced ${syncText}</span>` : ""}
+            <span class="version">v${CARD_VERSION}</span>
+          </div>
         </div>
-      </ha-card>
-    `;
+        ${body}
+      </div></ha-card>`;
 
-    // Bind toggle buttons
-    this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => {
-      btn.addEventListener("click", () => this._switchView(btn.dataset.view));
-    });
+    this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn =>
+      btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
+  }
+
+  // ====================== OVERVIEW VIEW ======================
+
+  _renderOverview(grouped) {
+    const todayDs = this._todayStr(), tomorrowDs = this._tomorrowStr();
+    const todayEvts = grouped[todayDs] || [], tomorrowEvts = grouped[tomorrowDs] || [];
+
+    return `
+      <div class="overview-top">
+        <div class="overview-col">
+          ${this._renderDay(todayDs, todayEvts)}
+        </div>
+        <div class="overview-col">
+          ${this._renderDay(tomorrowDs, tomorrowEvts)}
+        </div>
+      </div>
+      <div class="overview-divider"></div>
+      ${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}
+    `;
   }
 
   // ====================== SCHEDULE VIEW ======================
 
+  _renderSchedule(grouped) {
+    const days = this._getDaysFromToday(14);
+    return `<div class="days">${days.map(ds => this._renderDay(ds, grouped[ds] || [])).join("")}</div>`;
+  }
+
   _renderDay(ds, events) {
     const isToday = this._isToday(ds), isTomorrow = this._isTomorrow(ds);
-    const d = new Date(ds + "T12:00:00");
-    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    const d = new Date(ds+"T12:00:00"), isWeekend = d.getDay()===0||d.getDay()===6;
     let cls = "day";
     if (isToday) cls += " is-today";
     if (isTomorrow) cls += " is-tomorrow";
@@ -243,8 +239,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${count > 0 && !isToday ? `<span class="event-count">${count} event${count!==1?"s":""}</span>` : ""}
         </div>
         <div class="events">
-          ${count === 0
-            ? `<div class="no-events">No events</div>`
+          ${count === 0 ? `<div class="no-events">No events</div>`
             : events.map(ev => this._renderEvent(ev)).join("")}
         </div>
       </div>`;
@@ -259,7 +254,7 @@ class KatjaScheduleCard extends HTMLElement {
       if (m) flightBadge = `<span class="flight-badge">✈ ${m[1]}</span>`;
     }
     return `
-      <div class="event${isDrive ? " is-drive" : ""}">
+      <div class="event${isDrive?" is-drive":""}">
         <div class="event-time">${this._formatTime(ev)}</div>
         <div class="event-body">
           <div class="event-summary">
@@ -271,32 +266,23 @@ class KatjaScheduleCard extends HTMLElement {
       </div>`;
   }
 
-  // ====================== CALENDAR GRID VIEW ======================
+  // ====================== CALENDAR GRID ======================
 
   _renderCalendarGrid(days, grouped) {
-    const weeks = [];
-    const firstDate = new Date(days[0] + "T12:00:00");
-    // Monday = 0 offset. JS getDay(): Mon=1..Sun=0. Convert so Mon=0.
-    const jsDay = firstDate.getDay();
-    const padBefore = jsDay === 0 ? 6 : jsDay - 1; // days to pad back to Monday
-    const _fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-
+    const weeks = [], firstDate = new Date(days[0]+"T12:00:00");
+    const jsDay = firstDate.getDay(), padBefore = jsDay === 0 ? 6 : jsDay - 1;
     const allDays = [];
     for (let i = padBefore; i > 0; i--) {
-      const d = new Date(firstDate); d.setDate(d.getDate() - i);
-      allDays.push({ ds: _fmt(d), outside: true });
+      const d = new Date(firstDate); d.setDate(d.getDate()-i);
+      allDays.push({ ds: this._fmt(d), outside: true });
     }
-    for (const ds of days) {
-      allDays.push({ ds, outside: false });
-    }
+    for (const ds of days) allDays.push({ ds, outside: false });
     while (allDays.length % 7 !== 0) {
-      const last = new Date(allDays[allDays.length-1].ds + "T12:00:00");
-      last.setDate(last.getDate() + 1);
-      allDays.push({ ds: _fmt(last), outside: true });
+      const last = new Date(allDays[allDays.length-1].ds+"T12:00:00");
+      last.setDate(last.getDate()+1);
+      allDays.push({ ds: this._fmt(last), outside: true });
     }
-    for (let i = 0; i < allDays.length; i += 7) {
-      weeks.push(allDays.slice(i, i + 7));
-    }
+    for (let i = 0; i < allDays.length; i += 7) weeks.push(allDays.slice(i, i+7));
 
     return `
       <div class="cal-grid">
@@ -304,31 +290,28 @@ class KatjaScheduleCard extends HTMLElement {
           ${DAY_SHORT_MON.map(d => `<div class="cal-header-cell">${d}</div>`).join("")}
         </div>
         ${weeks.map(week => `
-          <div class="cal-week">
-            ${week.map(({ ds, outside }) => {
-              const isToday = this._isToday(ds);
-              const d = new Date(ds + "T12:00:00");
-              const evts = grouped[ds] || [];
-              const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-              let cls = "cal-day";
-              if (isToday) cls += " cal-today";
-              if (outside) cls += " cal-outside";
-              if (isWeekend) cls += " cal-weekend";
-              return `
-                <div class="${cls}">
-                  <div class="cal-date">${d.getDate()}</div>
-                  <div class="cal-events">
-                    ${evts.map(ev => {
-                      const isDrive = this._isDrive(ev.summary || "");
-                      return `<div class="cal-event${isDrive ? " cal-drive" : ""}" style="border-left: 3px solid ${ev._color || "#888"}">
-                        <span class="cal-event-time">${this._formatTimeShort(ev)}</span>
-                        <span class="cal-event-text">${ev.summary || ""}</span>
-                      </div>`;
-                    }).join("")}
-                  </div>
-                </div>`;
-            }).join("")}
-          </div>
+          <div class="cal-week">${week.map(({ds, outside}) => {
+            const isToday = this._isToday(ds), d = new Date(ds+"T12:00:00");
+            const evts = grouped[ds]||[], isWeekend = d.getDay()===0||d.getDay()===6;
+            let cls = "cal-day";
+            if (isToday) cls += " cal-today";
+            if (outside) cls += " cal-outside";
+            if (isWeekend) cls += " cal-weekend";
+            const isPast = ds < this._todayStr() && !outside;
+            if (isPast) cls += " cal-past";
+            return `<div class="${cls}">
+              <div class="cal-date">${d.getDate()}</div>
+              <div class="cal-events">
+                ${evts.map(ev => {
+                  const isDrive = this._isDrive(ev.summary||"");
+                  return `<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}">
+                    <span class="cal-event-time">${this._formatTimeShort(ev)}</span>
+                    <span class="cal-event-text">${ev.summary||""}</span>
+                  </div>`;
+                }).join("")}
+              </div>
+            </div>`;
+          }).join("")}</div>
         `).join("")}
       </div>`;
   }
@@ -358,16 +341,22 @@ class KatjaScheduleCard extends HTMLElement {
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 14px; color: var(--muted); }
       .header .badge { background: #E0A020; color: #1e1e2e; font-weight: 700; font-size: 13px; padding: 4px 12px; border-radius: 12px; }
       .header .version { font-size: 11px; color: rgba(255,255,255,0.2); }
-      .view-toggle {
-        display: flex; background: rgba(255,255,255,0.06); border-radius: 20px; padding: 3px;
-      }
+      .view-toggle { display: flex; background: rgba(255,255,255,0.06); border-radius: 20px; padding: 3px; }
       .toggle-btn {
         background: transparent; border: none; color: var(--muted); cursor: pointer;
-        padding: 8px 20px; border-radius: 16px; font-size: 14px; font-weight: 600;
-        transition: all 0.15s;
+        padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; transition: all 0.15s;
       }
       .toggle-btn.active { background: rgba(255,255,255,0.12); color: #fff; }
       .toggle-btn:hover:not(.active) { color: #ccc; }
+
+      /* --- Overview: Today + Tomorrow side by side --- */
+      .overview-top {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .overview-col { padding: 0; }
+      .overview-col:first-child { border-right: 1px solid var(--border); }
+      .overview-divider { height: 0; }
 
       /* --- Schedule view --- */
       .days { padding: 8px 0; }
@@ -411,36 +400,23 @@ class KatjaScheduleCard extends HTMLElement {
       .weekend .day-header { color: rgba(255,180,120,0.7); }
       .weekend.is-today .day-header { color: #FFB478; }
 
-      /* --- Calendar grid view --- */
+      /* --- Calendar grid --- */
       .cal-grid { padding: 12px 16px; }
-      .cal-header-row {
-        display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
-        margin-bottom: 6px;
-      }
-      .cal-header-cell {
-        text-align: center; font-size: 14px; font-weight: 600;
-        color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-        padding: 6px 0;
-      }
+      .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 6px; }
+      .cal-header-cell { text-align: center; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 0; }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
-      .cal-day {
-        background: rgba(255,255,255,0.03); border-radius: 8px;
-        padding: 6px; position: relative;
-      }
+      .cal-day { background: rgba(255,255,255,0.03); border-radius: 8px; padding: 6px; position: relative; }
       .cal-today { background: var(--today-bg); outline: 2px solid #4ECDC4; outline-offset: -2px; }
       .cal-outside { opacity: 0.3; }
+      .cal-past { opacity: 0.4; }
       .cal-weekend { background: rgba(255,180,120,0.04); }
-      .cal-date {
-        font-size: 16px; font-weight: 600; color: var(--muted);
-        margin-bottom: 6px;
-      }
+      .cal-date { font-size: 16px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
       .cal-today .cal-date { color: #4ECDC4; font-size: 18px; }
       .cal-events { display: flex; flex-direction: column; gap: 2px; }
       .cal-event {
-        padding: 4px 8px; border-radius: 4px;
-        background: rgba(255,255,255,0.05); font-size: 13px;
-        line-height: 1.35; overflow: hidden; white-space: nowrap;
-        text-overflow: ellipsis; display: flex; gap: 5px; align-items: baseline;
+        padding: 4px 8px; border-radius: 4px; background: rgba(255,255,255,0.05); font-size: 13px;
+        line-height: 1.35; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+        display: flex; gap: 5px; align-items: baseline;
       }
       .cal-event-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
       .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: #d0d0d0; font-size: 13px; }
@@ -450,13 +426,11 @@ class KatjaScheduleCard extends HTMLElement {
 }
 
 customElements.define("katja-schedule-card", KatjaScheduleCard);
-
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "katja-schedule-card",
   name: `Katja Schedule v${CARD_VERSION}`,
-  description: `v${CARD_VERSION} — 14-day family schedule with schedule/calendar views, color-coded events, flight badges.`,
+  description: `v${CARD_VERSION} — Family schedule: overview, schedule, and calendar views.`,
   preview: false,
 });
-
 console.info(`%c KATJA-SCHEDULE-CARD %c v${CARD_VERSION} `, "background: #4ECDC4; color: #1e1e2e; font-weight: bold;", "background: #1e1e2e; color: #4ECDC4;");
