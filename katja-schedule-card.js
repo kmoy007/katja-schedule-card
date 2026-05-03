@@ -5,7 +5,7 @@
  * Tap any event to see details. Drive/flight events get a "Recheck" button.
  */
 
-const CARD_VERSION = "0.8.0";
+const CARD_VERSION = "0.8.1";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -170,10 +170,24 @@ class KatjaScheduleCard extends HTMLElement {
     if (!this._hass) return;
     this._recheckLoading = true; this._render();
     try {
-      const loc = ev.location || ev.description || "";
-      const parts = loc.split("→").map(s => s.trim());
-      const origin = parts[0] || "home";
-      const destination = parts[1]?.split(".")[0]?.split(",")[0] || parts[0] || "";
+      // Try summary first (e.g. "🚗 Drive Sylmar → Thousand Oaks Park"), then location
+      let origin = "", destination = "";
+      const summary = ev.summary || "";
+      const loc = ev.location || "";
+      // Look for → in summary or location
+      for (const text of [summary, loc]) {
+        const arrowParts = text.split("→").map(s => s.trim());
+        if (arrowParts.length >= 2 && arrowParts[0] && arrowParts[1]) {
+          // Strip leading emoji/drive prefix from origin
+          origin = arrowParts[0].replace(/^[🚗\s]*(?:drive\s+)?/i, "").trim();
+          destination = arrowParts[1].trim();
+          break;
+        }
+      }
+      if (!origin || !destination) {
+        this._recheckResult = { ok: false, error: "Could not parse origin → destination from this event" };
+        this._recheckLoading = false; this._render(); return;
+      }
       this._recheckResult = await this._hass.callWS({
         type: "katja_schedule/refresh_drive",
         origin, destination,
@@ -275,9 +289,20 @@ class KatjaScheduleCard extends HTMLElement {
     if (this._recheckResult) {
       if (this._recheckResult.ok) {
         if (this._recheckResult.duration_text) {
+          const o = this._recheckResult.origin || {};
+          const d = this._recheckResult.destination || {};
           resultSection = `<div class="recheck-result ok">
-            <strong>${this._recheckResult.duration_text}</strong> with ${this._recheckResult.traffic_note || "current traffic"}
-            <br>${this._recheckResult.distance_text} via ${this._recheckResult.summary || "—"}
+            <div class="recheck-route">
+              <span class="recheck-label">From:</span> ${o.resolved || o.input || "?"}
+            </div>
+            <div class="recheck-route">
+              <span class="recheck-label">To:</span> ${d.resolved || d.input || "?"}
+            </div>
+            <div class="recheck-duration">
+              <strong>${this._recheckResult.duration_text}</strong> with ${this._recheckResult.traffic_note || "current traffic"}
+              <br>${this._recheckResult.distance_text} via ${this._recheckResult.summary || "—"}
+              ${this._recheckResult.duration_without_traffic_text ? `<br><span style="opacity:0.6">${this._recheckResult.duration_without_traffic_text} without traffic</span>` : ""}
+            </div>
           </div>`;
         } else if (this._recheckResult.status) {
           const est = this._recheckResult.estimated_arrival_local || this._recheckResult.destination?.scheduled_local || "";
@@ -506,6 +531,9 @@ class KatjaScheduleCard extends HTMLElement {
       .recheck-result { margin-top: 12px; padding: 12px; border-radius: 10px; font-size: 14px; line-height: 1.4; }
       .recheck-result.ok { background: rgba(78,205,196,0.1); color: #4ECDC4; }
       .recheck-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
+      .recheck-route { font-size: 13px; margin-bottom: 4px; color: #bbb; }
+      .recheck-label { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+      .recheck-duration { margin-top: 8px; font-size: 15px; }
     `;
   }
 }
