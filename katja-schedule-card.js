@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.19.0";
+const CARD_VERSION = "0.20.0";
 
 const THEMES = {
   dark: {
@@ -111,6 +111,10 @@ class KatjaScheduleCard extends HTMLElement {
     if (v === "today" || v === "tomorrow") return 6;
     if (v === "calendar") return 8;
     return 12;
+  }
+
+  getLayoutOptions() {
+    return { grid_rows: "auto", grid_min_rows: 2, grid_columns: "full", grid_min_columns: 2 };
   }
 
   static getConfigElement() { return document.createElement("katja-schedule-card-editor"); }
