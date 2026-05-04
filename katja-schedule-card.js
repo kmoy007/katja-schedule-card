@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.28.0";
+const CARD_VERSION = "0.29.0";
 
 // Theme tokens fall back to these when a theme leaves them unset, so older
 // color-only themes keep working unchanged.
@@ -598,6 +598,14 @@ class KatjaScheduleCard extends HTMLElement {
       seamList.map(s => String(s).trim().toLowerCase())
               .filter(s => ["left","right","top","bottom"].includes(s))
     );
+    // Per-panel themes (overview view only). Each region — today, tomorrow,
+    // calendar — can override the card's theme. Unset panels inherit `theme`.
+    const pt = config.panel_themes || {};
+    this._panelThemes = {
+      today:    THEMES[(pt.today    || "").toLowerCase()] ? pt.today.toLowerCase()    : null,
+      tomorrow: THEMES[(pt.tomorrow || "").toLowerCase()] ? pt.tomorrow.toLowerCase() : null,
+      calendar: THEMES[(pt.calendar || "").toLowerCase()] ? pt.calendar.toLowerCase() : null,
+    };
     this._render();
   }
 
@@ -1104,9 +1112,17 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== OVERVIEW / SCHEDULE / CALENDAR ======================
 
+  _panelStyle(panelKey) {
+    // Inline style="--xxx: ..." that overrides theme tokens for one panel.
+    // Returns "" when the panel uses the card's main theme so unstyled panels
+    // skip the inline-style noise entirely.
+    const name = this._panelThemes && this._panelThemes[panelKey];
+    return name ? ` data-panel="${panelKey}" style="${this._themeVars(name)}"` : "";
+  }
+
   _renderOverview(grouped) {
     const todayDs = this._todayStr(), tomorrowDs = this._tomorrowStr();
-    return `<div class="overview-top"><div class="overview-col">${this._renderDay(todayDs, grouped[todayDs]||[])}</div><div class="overview-col">${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div></div><div class="overview-divider"></div>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}`;
+    return `<div class="overview-top"><div class="overview-col"${this._panelStyle("today")}>${this._renderDay(todayDs, grouped[todayDs]||[])}</div><div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div></div><div class="overview-divider"></div><div${this._panelStyle("calendar")}>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}</div>`;
   }
 
   _renderSchedule(grouped) {
@@ -1145,10 +1161,11 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== STYLES ======================
 
-  _resolveTheme() {
+  _resolveTheme(name) {
     // Merge theme with defaults so every theme is fully populated. fontDisplay
     // falls back to font, eventTextStrong/Soft to text/muted.
-    const raw = THEMES[this._theme] || THEMES.dark;
+    const key = name || this._theme;
+    const raw = THEMES[key] || THEMES.dark;
     const t = { ...THEME_DEFAULTS, ...raw };
     if (!t.fontDisplay) t.fontDisplay = t.font;
     if (!t.eventTextStrong) t.eventTextStrong = t.headerText || t.text;
@@ -1157,34 +1174,97 @@ class KatjaScheduleCard extends HTMLElement {
     return t;
   }
 
+  /** All themable values exposed as CSS custom properties. Returned as a
+   *  semicolon-joined declaration string suitable for either `:host {...}`
+   *  or an inline `style="..."` attribute. Per-panel themes work by emitting
+   *  this string into the panel root's inline style — descendants reading
+   *  `var(--xxx)` pick up the override automatically. */
+  _themeVars(name) {
+    const t = this._resolveTheme(name);
+    const d = t._d;
+    const radiusPill      = t.radius === "0" ? "0" : "20px";
+    const radiusPillInner = t.radius === "0" ? "0" : "16px";
+    const calHeaderLs     = t.dayHeaderLetterSpacing === "0" ? "0.5px" : t.dayHeaderLetterSpacing;
+    return [
+      `--card-bg: ${t.cardBg}`,
+      `--text: ${t.text}`,
+      `--muted: ${t.muted}`,
+      `--border: ${t.border}`,
+      `--today-bg: ${t.todayBg}`,
+      `--accent: ${t.accent}`,
+      `--accent-bg: ${t.accentBg}`,
+      `--header-text: ${t.headerText}`,
+      `--event-hover: ${t.eventHover}`,
+      `--cal-day-bg: ${t.calDayBg}`,
+      `--cal-today-bg: ${t.calTodayBg}`,
+      `--weekend-bg: ${t.weekendBg}`,
+      `--modal-bg: ${t.modalBg}`,
+      `--modal-text: ${t.modalText}`,
+      `--card-shadow: ${t.cardShadow}`,
+      `--modal-shadow: ${t.modalShadow}`,
+      `--font: ${t.font}`,
+      `--font-display: ${t.fontDisplay}`,
+      `--title-size: ${t.titleSize}`,
+      `--title-weight: ${t.titleWeight}`,
+      `--title-transform: ${t.titleTransform}`,
+      `--title-letter-spacing: ${t.titleLetterSpacing}`,
+      `--day-header-size: ${t.dayHeaderSize}`,
+      `--day-header-weight: ${t.dayHeaderWeight}`,
+      `--day-header-transform: ${t.dayHeaderTransform}`,
+      `--day-header-letter-spacing: ${t.dayHeaderLetterSpacing}`,
+      `--cal-header-letter-spacing: ${calHeaderLs}`,
+      `--today-header-size: ${t.todayHeaderSize}`,
+      `--event-summary-size: ${t.eventSummarySize}`,
+      `--event-summary-weight: ${t.eventSummaryWeight}`,
+      `--event-time-size: ${t.eventTimeSize}`,
+      `--radius: ${t.radius}`,
+      `--radius-sm: ${t.radiusSm}`,
+      `--radius-xs: ${t.radiusXs}`,
+      `--radius-pill: ${radiusPill}`,
+      `--radius-pill-inner: ${radiusPillInner}`,
+      `--text-strong: ${t.eventTextStrong}`,
+      `--text-soft: ${t.eventTextSoft}`,
+      `--card-pad: ${d.cardPad}`,
+      `--day-pad: ${d.dayPad}`,
+      `--event-pad-v: ${d.eventPadV}`,
+      `--event-pad-h: ${d.eventPadH}`,
+      `--event-gap: ${d.eventGap}`,
+      `--event-cols: ${d.eventCols}`,
+      `--day-header-pad: ${d.dayHeaderPad}`,
+      `--day-spacing: ${d.daySpacing}`,
+      `--cal-pad: ${d.calPad}`,
+      `--cal-min: ${d.calMin}`,
+      `--overview-min: ${d.overviewMin}`,
+      `--header-gap: ${d.headerGap}`,
+    ].join("; ");
+  }
+
   _getStyles() {
     const t = this._resolveTheme();
-    const d = t._d;
     return `
-      :host { display: block; font-family: ${t.font}; color: ${t.text};
-        --card-bg: ${t.cardBg}; --today-bg: ${t.todayBg};
-        --border: ${t.border}; --muted: ${t.muted}; --accent: ${t.accent};
-        --font: ${t.font}; --font-display: ${t.fontDisplay};
-        --radius: ${t.radius}; --radius-sm: ${t.radiusSm}; --radius-xs: ${t.radiusXs};
-        --text-strong: ${t.eventTextStrong}; --text-soft: ${t.eventTextSoft};
-        --header-text: ${t.headerText}; }
-      .card { background: var(--card-bg); border-radius: var(--radius); overflow: hidden; position: relative; box-shadow: ${t.cardShadow}; }
+      :host { display: block; font-family: var(--font); color: var(--text); ${this._themeVars(this._theme)}; }
+      .card { background: var(--card-bg); border-radius: var(--radius); overflow: hidden; position: relative; box-shadow: var(--card-shadow); }
       .card-locked { border-radius: var(--radius-sm); }
       /* Seam mode — when adjacent cards abut, flatten the touching corners
-         and drop the shadow so the cards visually butt together. Pair with
-         a horizontal-stack / vertical-stack to remove HA's grid gap. */
+         and drop the shadow so the cards visually butt together. */
       .card.seam-left  { border-top-left-radius: 0;  border-bottom-left-radius: 0;  }
       .card.seam-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
       .card.seam-top   { border-top-left-radius: 0;  border-top-right-radius: 0;    }
       .card.seam-bottom{ border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
       .card.seam-left, .card.seam-right, .card.seam-top, .card.seam-bottom { box-shadow: none; }
-      .header { display: flex; align-items: center; justify-content: space-between; padding: ${d.cardPad}; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: ${d.headerGap}; }
-      .header .title { font-family: var(--font-display); font-size: ${t.titleSize}; font-weight: ${t.titleWeight}; letter-spacing: ${t.titleLetterSpacing}; text-transform: ${t.titleTransform}; color: var(--header-text); line-height: 1.1; }
+
+      /* Per-panel theming: any element with [data-panel] applies its own theme
+         scope via inline-style CSS variables. Children re-read var(--font) so
+         the override propagates. */
+      [data-panel] { font-family: var(--font); color: var(--text); background: var(--card-bg); }
+
+      .header { display: flex; align-items: center; justify-content: space-between; padding: var(--card-pad); border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: var(--header-gap); }
+      .header .title { font-family: var(--font-display); font-size: var(--title-size); font-weight: var(--title-weight); letter-spacing: var(--title-letter-spacing); text-transform: var(--title-transform); color: var(--header-text); line-height: 1.1; }
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 14px; color: var(--muted); }
       .header .badge { background: #E0A020; color: #1e1e2e; font-weight: 700; font-size: 13px; padding: 4px 12px; border-radius: var(--radius-sm); }
       .header .version { font-size: 11px; color: var(--muted); opacity: 0.5; }
-      .view-toggle { display: flex; background: ${t.accentBg}; border: 1px solid var(--border); border-radius: ${t.radius === "0" ? "0" : "20px"}; padding: 3px; }
-      .toggle-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 8px 16px; border-radius: ${t.radius === "0" ? "0" : "16px"}; font-family: var(--font); font-size: 13px; font-weight: 600; transition: all 0.15s; }
+      .view-toggle { display: flex; background: var(--accent-bg); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px; }
+      .toggle-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 8px 16px; border-radius: var(--radius-pill-inner); font-family: var(--font); font-size: 13px; font-weight: 600; transition: all 0.15s; }
       .toggle-btn.active { background: var(--accent); color: var(--card-bg); }
       .toggle-btn:hover:not(.active) { color: var(--header-text); opacity: 0.7; }
       .theme-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
@@ -1196,60 +1276,60 @@ class KatjaScheduleCard extends HTMLElement {
       .flagged-btn:hover { border-color: var(--accent); }
       .flagged-btn.active { background: rgba(255,100,100,0.15); color: #FF6B6B; border-color: #FF6B6B; }
       .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
-      .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: ${d.overviewMin}; }
-      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: ${t.accentBg}; }
+      .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: var(--overview-min); }
+      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--accent-bg); }
       .days { padding: 8px 0; }
-      .day { padding: ${d.dayPad}; margin-bottom: ${d.daySpacing}; }
-      .day-header { display: flex; align-items: center; gap: 10px; padding: ${d.dayHeaderPad}; font-family: var(--font-display); font-weight: ${t.dayHeaderWeight}; font-size: ${t.dayHeaderSize}; text-transform: ${t.dayHeaderTransform}; letter-spacing: ${t.dayHeaderLetterSpacing}; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
-      .day.is-today .day-header { color: var(--header-text); font-size: ${t.todayHeaderSize}; }
-      .day.is-tomorrow .day-header { color: var(--text-soft); font-size: calc(${t.dayHeaderSize} + 3px); }
+      .day { padding: var(--day-pad); margin-bottom: var(--day-spacing); }
+      .day-header { display: flex; align-items: center; gap: 10px; padding: var(--day-header-pad); font-family: var(--font-display); font-weight: var(--day-header-weight); font-size: var(--day-header-size); text-transform: var(--day-header-transform); letter-spacing: var(--day-header-letter-spacing); color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
+      .day.is-today .day-header { color: var(--header-text); font-size: var(--today-header-size); }
+      .day.is-tomorrow .day-header { color: var(--text-soft); font-size: calc(var(--day-header-size) + 3px); }
       .day.is-today { background: var(--today-bg); border-radius: var(--radius-sm); padding-top: 8px; padding-bottom: 12px; margin-bottom: 8px; }
       .day-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
       .day.is-today .day-dot { background: var(--accent); width: 10px; height: 10px; }
       .day.is-tomorrow .day-dot { background: var(--accent); opacity: 0.6; }
       .event-count { font-size: 13px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
       .events { padding: 4px 0; }
-      .event { display: grid; grid-template-columns: ${d.eventCols}; gap: ${d.eventGap}; padding: ${d.eventPadV} ${d.eventPadH}; border-bottom: 1px solid var(--border); align-items: start; cursor: pointer; border-radius: var(--radius-sm); }
-      .event:hover { background: ${t.eventHover}; }
+      .event { display: grid; grid-template-columns: var(--event-cols); gap: var(--event-gap); padding: var(--event-pad-v) var(--event-pad-h); border-bottom: 1px solid var(--border); align-items: start; cursor: pointer; border-radius: var(--radius-sm); }
+      .event:hover { background: var(--event-hover); }
       .event:last-child { border-bottom: none; }
-      .event-time { font-family: var(--font); font-size: ${t.eventTimeSize}; font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
-      .day.is-today .event-time { font-size: calc(${t.eventTimeSize} + 3px); color: var(--text-soft); }
+      .event-time { font-family: var(--font); font-size: var(--event-time-size); font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+      .day.is-today .event-time { font-size: calc(var(--event-time-size) + 3px); color: var(--text-soft); }
       .event-body { min-width: 0; }
-      .event-summary { font-family: var(--font); font-size: ${t.eventSummarySize}; font-weight: ${t.eventSummaryWeight}; color: var(--text-strong); display: flex; align-items: center; gap: 8px; line-height: 1.3; flex-wrap: wrap; }
-      .day.is-today .event-summary { font-size: calc(${t.eventSummarySize} + 3px); color: var(--header-text); }
+      .event-summary { font-family: var(--font); font-size: var(--event-summary-size); font-weight: var(--event-summary-weight); color: var(--text-strong); display: flex; align-items: center; gap: 8px; line-height: 1.3; flex-wrap: wrap; }
+      .day.is-today .event-summary { font-size: calc(var(--event-summary-size) + 3px); color: var(--header-text); }
       .event-summary .person-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
       .event-location { font-size: 14px; color: var(--muted); margin-top: 2px; }
       .event.is-drive .event-summary { font-style: italic; color: var(--muted); font-weight: 400; }
       .event.is-drive .event-time { color: var(--muted); opacity: 0.6; }
-      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: ${t.accentBg}; color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
+      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
       .flag-tag { display: inline-flex; align-items: center; background: rgba(255,100,100,0.15); color: #FF6B6B; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
-      .cal-grid { padding: ${d.calPad}; }
+      .cal-grid { padding: var(--cal-pad); }
       .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px; }
-      .cal-header-cell { font-family: var(--font-display); text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: ${t.dayHeaderLetterSpacing === "0" ? "0.5px" : t.dayHeaderLetterSpacing}; padding: 4px 0; border-bottom: 1px solid var(--border); }
+      .cal-header-cell { font-family: var(--font-display); text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: var(--cal-header-letter-spacing); padding: 4px 0; border-bottom: 1px solid var(--border); }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
-      .cal-day { background: ${t.calDayBg}; border-radius: var(--radius-xs); padding: 4px; min-height: ${d.calMin}; overflow: hidden; }
-      .cal-today { background: ${t.calTodayBg}; outline: 2px solid var(--accent); outline-offset: -2px; }
+      .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: var(--cal-min); overflow: hidden; }
+      .cal-today { background: var(--cal-today-bg); outline: 2px solid var(--accent); outline-offset: -2px; }
       .cal-outside { opacity: 0.25; }
       .cal-past { opacity: 0.35; }
-      .cal-weekend { background: ${t.weekendBg}; }
+      .cal-weekend { background: var(--weekend-bg); }
       .cal-date { font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
       .cal-today .cal-date { color: var(--accent); font-size: 15px; }
       .cal-events { display: flex; flex-direction: column; gap: 1px; }
-      .cal-event { padding: 2px 4px; border-radius: var(--radius-xs); background: ${t.eventHover}; font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
+      .cal-event { padding: 2px 4px; border-radius: var(--radius-xs); background: var(--event-hover); font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
       .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-size: 11px; }
       .cal-drive { opacity: 0.5; font-style: italic; }
 
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
-      .modal { background: ${t.modalBg}; color: ${t.modalText}; border-radius: var(--radius); width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: ${t.modalShadow}; font-family: var(--font); }
+      .modal { background: var(--modal-bg); color: var(--modal-text); border-radius: var(--radius); width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: var(--modal-shadow); font-family: var(--font); }
       .modal-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .modal-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
       .modal-close { background: transparent; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); }
-      .modal-close:hover { background: ${t.eventHover}; color: var(--text-strong); }
+      .modal-close:hover { background: var(--event-hover); color: var(--text-strong); }
       .modal-body { padding: 16px 20px; }
       .modal-row { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 1.4; }
       .modal-row:last-child { border-bottom: none; }
@@ -1257,7 +1337,7 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-desc { font-size: 13px; color: var(--muted); line-height: 1.4; }
 
       /* Recheck */
-      .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: ${t.accentBg}; color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
+      .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
 
@@ -1265,12 +1345,12 @@ class KatjaScheduleCard extends HTMLElement {
       .origin-label { font-size: 14px; font-weight: 600; color: var(--text-soft); margin-bottom: 8px; }
       .origin-buttons { display: flex; gap: 8px; margin-bottom: 6px; }
       .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
-      .origin-btn:hover { border-color: var(--accent); background: ${t.accentBg}; }
+      .origin-btn:hover { border-color: var(--accent); background: var(--accent-bg); }
       .origin-btn:disabled { opacity: 0.5; cursor: wait; }
       .origin-hint { font-size: 11px; color: var(--muted); }
 
       .recheck-result { margin-top: 12px; padding: 14px; border-radius: var(--radius-sm); font-size: 14px; line-height: 1.5; }
-      .recheck-result.ok { background: ${t.accentBg}; color: var(--accent); }
+      .recheck-result.ok { background: var(--accent-bg); color: var(--accent); }
       .recheck-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
       .recheck-route { font-size: 13px; margin-bottom: 3px; color: var(--text-soft); }
       .recheck-label { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; margin-right: 4px; }
@@ -1284,14 +1364,15 @@ class KatjaScheduleCard extends HTMLElement {
       .action-btn:disabled { opacity: 0.5; cursor: wait; }
       .action-btn.action-update { background: #2E8B57; color: white; }
       .action-btn.action-update:hover { background: #1F6B41; }
-      .action-btn.action-add-drive { background: ${t.accentBg}; color: var(--accent); }
+      .action-btn.action-add-drive { background: var(--accent-bg); color: var(--accent); }
       .action-btn.action-add-drive:hover { filter: brightness(1.15); }
 
       .action-result { margin-top: 10px; padding: 12px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.4; }
       .action-result.ok { background: rgba(46,139,87,0.15); color: var(--accent); }
       .action-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
 
-      /* Per-theme escape hatch — appended last so it overrides any of the above. */
+      /* Per-theme escape hatch — appended last so it overrides any of the above.
+         Lives at card scope only; per-panel customCss is not supported. */
       ${t.customCss || ""}
     `;
   }
@@ -1436,6 +1517,25 @@ class KatjaScheduleCardEditor extends HTMLElement {
         <label style="display:inline;margin:0">Show theme toggle button</label>
       </div>
 
+      <h3>Per-panel themes (Overview view)</h3>
+      <p style="font-size:11px;color:#888;margin:0 0 10px">
+        In Overview, today / tomorrow / calendar each get their own region.
+        Set a different theme on any panel to override the card's main theme.
+        Leave at "(inherit)" to use the card theme.
+      </p>
+      ${["today","tomorrow","calendar"].map(panel => {
+        const cur = (c.panel_themes && c.panel_themes[panel]) || "";
+        return `<div class="row">
+          <label style="text-transform:capitalize">${panel}</label>
+          <select data-panel-theme="${panel}">
+            <option value="" ${!cur ? "selected" : ""}>(inherit card theme)</option>
+            ${Object.entries(THEMES).map(([k, v]) =>
+              `<option value="${k}" ${cur === k ? "selected" : ""}>${v.name}</option>`
+            ).join("")}
+          </select>
+        </div>`;
+      }).join("")}
+
       <div class="row">
         <label>Seam — flatten the touching edges so this card butts against neighbors</label>
         <p style="font-size:11px;color:#888;margin:0 0 6px">
@@ -1499,6 +1599,11 @@ class KatjaScheduleCardEditor extends HTMLElement {
     this.shadowRoot.querySelector("#sel-theme").addEventListener("change", e => this._update("theme", e.target.value));
     this.shadowRoot.querySelector("#sel-view").addEventListener("change", e => this._update("view", e.target.value));
     this.shadowRoot.querySelector("#chk-theme-toggle").addEventListener("change", e => this._update("show_theme_toggle", e.target.checked));
+    this.shadowRoot.querySelectorAll("[data-panel-theme]").forEach(sel => {
+      sel.addEventListener("change", e => {
+        this._updateNested("panel_themes", e.target.dataset.panelTheme, e.target.value);
+      });
+    });
     this.shadowRoot.querySelectorAll("[data-seam]").forEach(box => {
       box.addEventListener("change", () => {
         const sides = Array.from(this.shadowRoot.querySelectorAll("[data-seam]"))
