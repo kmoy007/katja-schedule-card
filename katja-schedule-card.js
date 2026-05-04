@@ -5,7 +5,54 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.16.0";
+const CARD_VERSION = "0.17.0";
+
+const THEMES = {
+  dark: {
+    name: "Dark",
+    cardBg: "#1e1e2e", text: "#e0e0e0", muted: "#8a8a9a",
+    border: "rgba(255,255,255,0.08)", todayBg: "rgba(255,255,255,0.08)",
+    accent: "#4ECDC4", accentBg: "rgba(78,205,196,0.04)",
+    headerBg: "#1e1e2e", headerText: "#fff",
+    eventHover: "rgba(255,255,255,0.04)",
+    calDayBg: "rgba(255,255,255,0.03)", calTodayBg: "rgba(78,205,196,0.1)",
+    weekendBg: "rgba(255,180,120,0.04)",
+    modalBg: "#2a2a3e", modalText: "#e0e0e0",
+  },
+  light: {
+    name: "Light",
+    cardBg: "#ffffff", text: "#1D232A", muted: "#5A6475",
+    border: "#E2E6EC", todayBg: "rgba(31,78,120,0.06)",
+    accent: "#1F4E78", accentBg: "rgba(31,78,120,0.03)",
+    headerBg: "#ffffff", headerText: "#1D232A",
+    eventHover: "rgba(0,0,0,0.03)",
+    calDayBg: "#F8F9FA", calTodayBg: "rgba(31,78,120,0.08)",
+    weekendBg: "rgba(255,180,120,0.06)",
+    modalBg: "#ffffff", modalText: "#1D232A",
+  },
+  midnight: {
+    name: "Midnight",
+    cardBg: "#0d1117", text: "#c9d1d9", muted: "#6e7681",
+    border: "rgba(255,255,255,0.06)", todayBg: "rgba(88,166,255,0.08)",
+    accent: "#58a6ff", accentBg: "rgba(88,166,255,0.04)",
+    headerBg: "#0d1117", headerText: "#f0f6fc",
+    eventHover: "rgba(255,255,255,0.03)",
+    calDayBg: "rgba(255,255,255,0.02)", calTodayBg: "rgba(88,166,255,0.12)",
+    weekendBg: "rgba(255,180,120,0.03)",
+    modalBg: "#161b22", modalText: "#c9d1d9",
+  },
+  warm: {
+    name: "Warm",
+    cardBg: "#1a1512", text: "#e8ddd0", muted: "#9a8a7a",
+    border: "rgba(255,220,180,0.1)", todayBg: "rgba(255,180,100,0.1)",
+    accent: "#FFB060", accentBg: "rgba(255,180,100,0.05)",
+    headerBg: "#1a1512", headerText: "#f0e6d8",
+    eventHover: "rgba(255,220,180,0.05)",
+    calDayBg: "rgba(255,220,180,0.03)", calTodayBg: "rgba(255,180,100,0.12)",
+    weekendBg: "rgba(255,180,120,0.06)",
+    modalBg: "#231e18", modalText: "#e8ddd0",
+  },
+};
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -33,6 +80,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionResult = null;
     this._originPickerMode = false;
     this._dayDetailDate = null;
+    this._theme = "dark";
   }
 
   set hass(hass) {
@@ -43,6 +91,10 @@ class KatjaScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config.calendars || !config.calendars.length) throw new Error("Define at least one calendar entity.");
     this._config = { title: "Family Schedule", ...config };
+    // Theme
+    const themeName = (config.theme || "dark").toLowerCase();
+    this._theme = THEMES[themeName] ? themeName : "dark";
+    this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view: today, tomorrow, calendar, schedule, overview
     const locked = (config.view || "").toLowerCase();
     if (locked && ["today", "tomorrow", "calendar", "schedule", "overview"].includes(locked)) {
@@ -187,6 +239,12 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _switchView(v) { this._view = v; this._detailEvent = null; this._dayDetailDate = null; this._render(); }
+  _cycleTheme() {
+    const keys = Object.keys(THEMES);
+    const idx = keys.indexOf(this._theme);
+    this._theme = keys[(idx + 1) % keys.length];
+    this._render();
+  }
   _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._render(); }
   _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
@@ -302,6 +360,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
+            ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
           </div>
         </div>` : ""}
         ${body}${modal}
@@ -309,6 +368,7 @@ class KatjaScheduleCard extends HTMLElement {
 
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
+    this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => this._openDetail(this._events[parseInt(el.dataset.eventIdx)])));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._detailEvent) this._closeDetail();
@@ -519,60 +579,65 @@ class KatjaScheduleCard extends HTMLElement {
   // ====================== STYLES ======================
 
   _getStyles() {
+    const t = THEMES[this._theme] || THEMES.dark;
     return `
-      :host { display: block; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #e0e0e0;
-        --card-bg: var(--ha-card-background, #1e1e2e); --today-bg: rgba(255,255,255,0.08);
-        --border: rgba(255,255,255,0.08); --muted: #8a8a9a; }
+      :host { display: block; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: ${t.text};
+        --card-bg: ${t.cardBg}; --today-bg: ${t.todayBg};
+        --border: ${t.border}; --muted: ${t.muted}; --accent: ${t.accent}; }
       .card { background: var(--card-bg); border-radius: 16px; overflow: hidden; position: relative; }
       .card-locked { border-radius: 12px; }
       .header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 12px; }
-      .header .title { font-size: 26px; font-weight: 700; color: #fff; }
+      .header .title { font-size: 26px; font-weight: 700; color: ${t.headerText}; }
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 14px; color: var(--muted); }
       .header .badge { background: #E0A020; color: #1e1e2e; font-weight: 700; font-size: 13px; padding: 4px 12px; border-radius: 12px; }
       .header .version { font-size: 11px; color: rgba(255,255,255,0.2); }
       .view-toggle { display: flex; background: rgba(255,255,255,0.06); border-radius: 20px; padding: 3px; }
       .toggle-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; transition: all 0.15s; }
-      .toggle-btn.active { background: rgba(255,255,255,0.12); color: #fff; }
-      .toggle-btn:hover:not(.active) { color: #ccc; }
+      .toggle-btn.active { background: rgba(255,255,255,0.12); color: ${t.headerText}; }
+      .toggle-btn:hover:not(.active) { color: ${t.headerText}; opacity: 0.7; }
+      .theme-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
+        cursor: pointer; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
+        transition: all 0.15s; }
+      .theme-btn:hover { color: ${t.headerText}; border-color: var(--accent); }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: 300px; }
-      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid #4ECDC4; background: rgba(78,205,196,0.04); }
+      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: ${t.accentBg}; }
       .days { padding: 8px 0; }
       .day { padding: 0 20px; margin-bottom: 4px; }
       .day-header { display: flex; align-items: center; gap: 10px; padding: 14px 4px 10px; font-weight: 600; font-size: 16px; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
-      .day.is-today .day-header { color: #fff; font-size: 22px; }
+      .day.is-today .day-header { color: ${t.headerText}; font-size: 22px; }
       .day.is-tomorrow .day-header { color: #ccc; font-size: 19px; }
       .day.is-today { background: var(--today-bg); border-radius: 12px; padding-top: 8px; padding-bottom: 12px; margin-bottom: 8px; }
       .day-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-      .day.is-today .day-dot { background: #4ECDC4; width: 10px; height: 10px; }
-      .day.is-tomorrow .day-dot { background: #45B7D1; }
+      .day.is-today .day-dot { background: var(--accent); width: 10px; height: 10px; }
+      .day.is-tomorrow .day-dot { background: var(--accent); opacity: 0.6; }
       .event-count { font-size: 13px; color: var(--muted); font-weight: 400; }
       .events { padding: 4px 0; }
       .event { display: grid; grid-template-columns: 90px 1fr; gap: 12px; padding: 8px 4px; border-bottom: 1px solid rgba(255,255,255,0.03); align-items: start; cursor: pointer; border-radius: 8px; }
-      .event:hover { background: rgba(255,255,255,0.04); }
+      .event:hover { background: ${t.eventHover}; }
       .event:last-child { border-bottom: none; }
       .event-time { font-size: 15px; font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
       .day.is-today .event-time { font-size: 18px; color: #bbb; }
       .event-body { min-width: 0; }
       .event-summary { font-size: 16px; font-weight: 500; color: #e0e0e0; display: flex; align-items: center; gap: 8px; line-height: 1.3; }
-      .day.is-today .event-summary { font-size: 19px; color: #fff; }
+      .day.is-today .event-summary { font-size: 19px; color: ${t.headerText}; }
       .event-summary .person-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
       .event-location { font-size: 14px; color: var(--muted); margin-top: 2px; }
       .event.is-drive .event-summary { font-style: italic; color: var(--muted); font-weight: 400; }
       .event.is-drive .event-time { color: rgba(255,255,255,0.25); }
-      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(78,205,196,0.15); color: #4ECDC4; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 8px; }
+      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(78,205,196,0.15); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 8px; }
       .no-events { padding: 8px 4px; font-size: 15px; color: rgba(255,255,255,0.2); font-style: italic; }
       .weekend .day-header { color: rgba(255,180,120,0.7); }
       .cal-grid { padding: 8px 12px; }
       .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px; }
       .cal-header-cell { text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 0; border-bottom: 1px solid var(--border); }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
-      .cal-day { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 4px; min-height: 60px; overflow: hidden; }
-      .cal-today { background: rgba(78,205,196,0.1); outline: 2px solid #4ECDC4; outline-offset: -2px; }
+      .cal-day { background: ${t.calDayBg}; border-radius: 6px; padding: 4px; min-height: 60px; overflow: hidden; }
+      .cal-today { background: ${t.calTodayBg}; outline: 2px solid var(--accent); outline-offset: -2px; }
       .cal-outside { opacity: 0.25; }
       .cal-past { opacity: 0.35; }
-      .cal-weekend { background: rgba(255,180,120,0.04); }
+      .cal-weekend { background: ${t.weekendBg}; }
       .cal-date { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
-      .cal-today .cal-date { color: #4ECDC4; font-size: 15px; }
+      .cal-today .cal-date { color: var(--accent); font-size: 15px; }
       .cal-events { display: flex; flex-direction: column; gap: 1px; }
       .cal-event { padding: 2px 4px; border-radius: 3px; background: rgba(255,255,255,0.05); font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
@@ -581,7 +646,7 @@ class KatjaScheduleCard extends HTMLElement {
 
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
-      .modal { background: #2a2a3e; border-radius: 16px; width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+      .modal { background: ${t.modalBg}; color: ${t.modalText}; border-radius: 16px; width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
       .modal-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .modal-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
       .modal-title { font-size: 20px; font-weight: 600; color: #fff; flex: 1; }
