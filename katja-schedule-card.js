@@ -210,7 +210,7 @@ class KatjaScheduleCard extends HTMLElement {
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
   _isFlagged(s) { return s && (s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
-  _toggleFlagged() { this._showFlagged = !this._showFlagged; this._render(); }
+  _toggleFlagged() { this._showFlagged = !this._showFlagged; console.info("KATJA: toggled flagged to", this._showFlagged); this._render(); }
   _hasAddress(ev) { return !!(ev.location && ev.location.trim().length > 3); }
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
 
@@ -395,7 +395,7 @@ class KatjaScheduleCard extends HTMLElement {
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
-    this.shadowRoot.querySelector("#flagged-toggle")?.addEventListener("click", () => this._toggleFlagged());
+    this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => this._openDetail(this._events[parseInt(el.dataset.eventIdx)])));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._detailEvent) this._closeDetail();
