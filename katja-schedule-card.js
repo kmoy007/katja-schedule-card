@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.12.0";
+const CARD_VERSION = "0.13.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -156,7 +156,21 @@ class KatjaScheduleCard extends HTMLElement {
         syncText = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`;
       }
     }
-    return { pendingCount, syncText };
+    let buildInfo = "";
+    if (this._hass && this._config.sensors?.sync) {
+      const s = this._hass.states[this._config.sensors.sync];
+      if (s?.attributes) {
+        const sha = s.attributes.build_sha || "";
+        const bt = s.attributes.build_time || "";
+        if (sha) {
+          buildInfo = sha;
+          if (bt) {
+            try { buildInfo += ` · ${new Date(bt).toLocaleDateString("en-US", {month:"short", day:"numeric"})}`; } catch(_) {}
+          }
+        }
+      }
+    }
+    return { pendingCount, syncText, buildInfo };
   }
 
   _switchView(v) { this._view = v; this._detailEvent = null; this._dayDetailDate = null; this._render(); }
@@ -234,7 +248,7 @@ class KatjaScheduleCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const grouped = this._groupByDate(this._events);
-    const { pendingCount, syncText } = this._getSensorData();
+    const { pendingCount, syncText, buildInfo } = this._getSensorData();
 
     let body = "";
     if (this._view === "overview") body = this._renderOverview(grouped);
@@ -258,7 +272,7 @@ class KatjaScheduleCard extends HTMLElement {
           <div class="meta">
             ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
-            <span class="version">v${CARD_VERSION}</span>
+            <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
           </div>
         </div>
         ${body}${modal}
