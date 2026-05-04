@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.23.0";
+const CARD_VERSION = "0.24.0";
 
 const THEMES = {
   dark: {
@@ -144,9 +144,20 @@ class KatjaScheduleCard extends HTMLElement {
       try {
         const events = await this._hass.callApi("GET",
           `calendars/${cal.entity}?start=${start.toISOString()}&end=${end.toISOString()}`);
-        for (const ev of events || [])
-          all.push({ ...ev, _color: cal.color || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
-                     _label: cal.label || cal.entity.split("_").pop() });
+        for (const ev of events || []) {
+          // Integration v0.12+ encodes Who/Status as `Key: value` lines in
+          // description. Parse those out so the card can color-by-person and
+          // toggle-by-status without needing 5 entities.
+          const meta = this._parseEventMeta(ev.description || "");
+          const who = (meta.who || cal.label || "").toLowerCase();
+          const colorKey = who.split(",")[0]?.trim();
+          all.push({
+            ...ev,
+            _color: cal.color || PERSON_COLORS[colorKey] || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
+            _label: meta.who || cal.label || cal.entity.split("_").pop(),
+            _status: meta.status || "",
+          });
+        }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
     }
     const seen = new Set(), deduped = [];
@@ -156,6 +167,20 @@ class KatjaScheduleCard extends HTMLElement {
     }
     this._events = deduped;
     this._render();
+  }
+
+  _parseEventMeta(description) {
+    const out = {};
+    if (!description) return out;
+    for (const line of description.split(/\r?\n/)) {
+      const m = line.match(/^\s*(\w+)\s*:\s*(.+)\s*$/);
+      if (!m) continue;
+      const k = m[1].toLowerCase();
+      if (k === "who" || k === "status" || k === "where" || k === "flight" || k === "source") {
+        out[k] = m[2].trim();
+      }
+    }
+    return out;
   }
 
   _groupByDate(events) {
@@ -209,7 +234,23 @@ class KatjaScheduleCard extends HTMLElement {
 
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
-  _isFlagged(s) { return s && (s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
+  _isFlaggedText(s) { return s && (s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
+  _isHiddenStatus(status) { return status === "hidden_rule" || status === "hidden_oneoff"; }
+  _isFlagged(ev) {
+    // Accept either an event object or a summary string for back-compat.
+    if (typeof ev === "string") return this._isFlaggedText(ev);
+    if (!ev) return false;
+    return this._isFlaggedText(ev.summary || "") || this._isHiddenStatus(ev._status);
+  }
+  _flaggedLabel(ev) {
+    if (!ev) return "";
+    if (ev._status === "hidden_rule") return "Hidden by rule";
+    if (ev._status === "hidden_oneoff") return "Hidden";
+    const s = (ev.summary || "").toUpperCase();
+    if (s.includes("CANCELLED")) return "Cancelled";
+    if (s.includes("SKIPPED")) return "Skipped";
+    return "";
+  }
   _toggleFlagged() { this._showFlagged = !this._showFlagged; console.info("KATJA: toggled flagged to", this._showFlagged); this._render(); }
   _hasAddress(ev) { return !!(ev.location && ev.location.trim().length > 3); }
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
@@ -382,11 +423,11 @@ class KatjaScheduleCard extends HTMLElement {
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
-            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🗑</button>
+            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
           </div>
         </div>` : ""}
         ${!showHeader ? `<div class="floating-theme">
-          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🗑</button>
+          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
         </div>` : ""}
         ${body}${modal}
@@ -586,13 +627,14 @@ class KatjaScheduleCard extends HTMLElement {
 
   _renderEvent(ev) {
     const summary = ev.summary||"", isDrive = this._isDrive(summary), idx = this._events.indexOf(ev);
-    const flagged = this._isFlagged(summary);
+    const flagged = this._isFlagged(ev);
     if (flagged && !this._showFlagged) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
     if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${m[1]}</span>`; }
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
-    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${ev._color||"#888"}"></span>${summary} ${flightBadge}</div>${ev.location?`<div class="event-location">${ev.location}</div>`:""}</div></div>`;
+    const flaggedTag = flagged ? `<span class="flag-tag">${this._flaggedLabel(ev)}</span>` : "";
+    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${ev._color||"#888"}"></span>${summary} ${flightBadge}${flaggedTag}</div>${ev.location?`<div class="event-location">${ev.location}</div>`:""}</div></div>`;
   }
 
   _renderCalendarGrid(days, grouped) {
@@ -603,7 +645,7 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev.summary||"")).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev.summary||"");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
   }
 
   // ====================== STYLES ======================
@@ -660,6 +702,7 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-drive .event-summary { font-style: italic; color: var(--muted); font-weight: 400; }
       .event.is-drive .event-time { color: rgba(255,255,255,0.25); }
       .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(78,205,196,0.15); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 8px; }
+      .flag-tag { display: inline-flex; align-items: center; background: rgba(255,100,100,0.15); color: #FF6B6B; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; text-decoration: none; }
       .no-events { padding: 8px 4px; font-size: 15px; color: rgba(255,255,255,0.2); font-style: italic; }
       .weekend .day-header { color: rgba(255,180,120,0.7); }
       .cal-grid { padding: 8px 12px; }
@@ -868,6 +911,12 @@ class KatjaScheduleCardEditor extends HTMLElement {
       </div>
 
       <h3>Calendars</h3>
+      <p style="font-size:12px;color:#888;margin:0 0 10px">
+        v0.12+ ships a single <code>calendar.schedule</code> entity that
+        contains every event. Color comes from each event's <code>Who:</code>
+        line — leave the per-row color as a fallback. Older per-person
+        entities still work.
+      </p>
       ${calendars.map((cal, i) => `
         <div class="cal-item">
           <select data-cal-idx="${i}" data-cal-field="entity">
