@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.17.0";
+const CARD_VERSION = "0.18.0";
 
 const THEMES = {
   dark: {
@@ -111,6 +111,19 @@ class KatjaScheduleCard extends HTMLElement {
     if (v === "today" || v === "tomorrow") return 6;
     if (v === "calendar") return 8;
     return 12;
+  }
+
+  static getConfigElement() { return document.createElement("katja-schedule-card-editor"); }
+
+  static getStubConfig() {
+    return {
+      title: "Family Schedule",
+      theme: "dark",
+      view: "",
+      show_theme_toggle: false,
+      calendars: [],
+      sensors: { pending: "", sync: "" },
+    };
   }
 
   // ====================== DATA ======================
@@ -705,3 +718,177 @@ window.customCards.push({
   preview: false,
 });
 console.info(`%c KATJA-SCHEDULE-CARD %c v${CARD_VERSION} `, "background: #4ECDC4; color: #1e1e2e; font-weight: bold;", "background: #1e1e2e; color: #4ECDC4;");
+
+
+// ====================== VISUAL CONFIG EDITOR ======================
+
+class KatjaScheduleCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = {};
+    this._hass = null;
+  }
+
+  set hass(hass) { this._hass = hass; }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  _fire(config) {
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+  }
+
+  _update(key, value) {
+    const c = { ...this._config };
+    if (value === "" || value === undefined) delete c[key];
+    else c[key] = value;
+    this._config = c;
+    this._fire(c);
+    this._render();
+  }
+
+  _updateNested(parent, key, value) {
+    const c = { ...this._config };
+    c[parent] = { ...(c[parent] || {}) };
+    if (value === "") delete c[parent][key];
+    else c[parent][key] = value;
+    this._config = c;
+    this._fire(c);
+    this._render();
+  }
+
+  _addCalendar() {
+    const c = { ...this._config };
+    c.calendars = [...(c.calendars || []), { entity: "", color: "#888888", label: "" }];
+    this._config = c;
+    this._fire(c);
+    this._render();
+  }
+
+  _removeCalendar(idx) {
+    const c = { ...this._config };
+    c.calendars = [...(c.calendars || [])];
+    c.calendars.splice(idx, 1);
+    this._config = c;
+    this._fire(c);
+    this._render();
+  }
+
+  _updateCalendar(idx, field, value) {
+    const c = { ...this._config };
+    c.calendars = [...(c.calendars || [])];
+    c.calendars[idx] = { ...c.calendars[idx], [field]: value };
+    this._config = c;
+    this._fire(c);
+  }
+
+  _render() {
+    const c = this._config;
+    const calendars = c.calendars || [];
+    const calEntities = this._hass
+      ? Object.keys(this._hass.states).filter(e => e.startsWith("calendar.")).sort()
+      : [];
+    const sensorEntities = this._hass
+      ? Object.keys(this._hass.states).filter(e => e.startsWith("sensor.")).sort()
+      : [];
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; font-family: system-ui, sans-serif; }
+        .row { margin-bottom: 12px; }
+        label { display: block; font-size: 12px; font-weight: 600; color: #888; margin-bottom: 4px; text-transform: uppercase; }
+        input, select { width: 100%; padding: 8px; border: 1px solid #444; border-radius: 6px; background: #2a2a3e; color: #e0e0e0; font-size: 14px; box-sizing: border-box; }
+        input:focus, select:focus { outline: none; border-color: #4ECDC4; }
+        .toggle-row { display: flex; align-items: center; gap: 10px; }
+        .toggle-row input[type="checkbox"] { width: auto; }
+        .cal-item { display: grid; grid-template-columns: 1fr 80px 80px 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
+        .cal-item input { font-size: 12px; padding: 6px; }
+        .cal-item select { font-size: 12px; padding: 6px; }
+        .remove-btn { background: #8B2E2E; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; padding: 4px 8px; }
+        .remove-btn:hover { background: #B03018; }
+        .add-btn { background: #2E8B57; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; padding: 8px 16px; font-weight: 600; }
+        .add-btn:hover { background: #1F6B41; }
+        h3 { font-size: 14px; color: #aaa; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #333; }
+      </style>
+
+      <div class="row">
+        <label>Title</label>
+        <input type="text" value="${c.title || "Family Schedule"}" id="inp-title">
+      </div>
+
+      <div class="row">
+        <label>Theme</label>
+        <select id="sel-theme">
+          ${Object.entries(THEMES).map(([k, v]) =>
+            `<option value="${k}" ${(c.theme || "dark") === k ? "selected" : ""}>${v.name}</option>`
+          ).join("")}
+        </select>
+      </div>
+
+      <div class="row">
+        <label>View (leave empty for full card with toggle)</label>
+        <select id="sel-view">
+          <option value="" ${!c.view ? "selected" : ""}>Full card (Overview + toggle)</option>
+          <option value="overview" ${c.view === "overview" ? "selected" : ""}>Overview only</option>
+          <option value="today" ${c.view === "today" ? "selected" : ""}>Today only</option>
+          <option value="tomorrow" ${c.view === "tomorrow" ? "selected" : ""}>Tomorrow only</option>
+          <option value="calendar" ${c.view === "calendar" ? "selected" : ""}>Calendar grid only</option>
+          <option value="schedule" ${c.view === "schedule" ? "selected" : ""}>Schedule (Cards) only</option>
+        </select>
+      </div>
+
+      <div class="row toggle-row">
+        <input type="checkbox" id="chk-theme-toggle" ${c.show_theme_toggle ? "checked" : ""}>
+        <label style="display:inline;margin:0">Show theme toggle button</label>
+      </div>
+
+      <h3>Calendars</h3>
+      ${calendars.map((cal, i) => `
+        <div class="cal-item">
+          <select data-cal-idx="${i}" data-cal-field="entity">
+            <option value="">Select calendar...</option>
+            ${calEntities.map(e => `<option value="${e}" ${cal.entity === e ? "selected" : ""}>${e.replace("calendar.", "")}</option>`).join("")}
+          </select>
+          <input type="color" value="${cal.color || "#888888"}" data-cal-idx="${i}" data-cal-field="color">
+          <input type="text" placeholder="Label" value="${cal.label || ""}" data-cal-idx="${i}" data-cal-field="label">
+          <button class="remove-btn" data-remove-idx="${i}">✕</button>
+        </div>
+      `).join("")}
+      <button class="add-btn" id="btn-add-cal">+ Add calendar</button>
+
+      <h3>Sensors (optional)</h3>
+      <div class="row">
+        <label>Pending review sensor</label>
+        <select id="sel-sensor-pending">
+          <option value="">None</option>
+          ${sensorEntities.map(e => `<option value="${e}" ${(c.sensors?.pending) === e ? "selected" : ""}>${e.replace("sensor.", "")}</option>`).join("")}
+        </select>
+      </div>
+      <div class="row">
+        <label>Last sync sensor</label>
+        <select id="sel-sensor-sync">
+          <option value="">None</option>
+          ${sensorEntities.map(e => `<option value="${e}" ${(c.sensors?.sync) === e ? "selected" : ""}>${e.replace("sensor.", "")}</option>`).join("")}
+        </select>
+      </div>
+    `;
+
+    // Wire events
+    this.shadowRoot.querySelector("#inp-title").addEventListener("change", e => this._update("title", e.target.value));
+    this.shadowRoot.querySelector("#sel-theme").addEventListener("change", e => this._update("theme", e.target.value));
+    this.shadowRoot.querySelector("#sel-view").addEventListener("change", e => this._update("view", e.target.value));
+    this.shadowRoot.querySelector("#chk-theme-toggle").addEventListener("change", e => this._update("show_theme_toggle", e.target.checked));
+    this.shadowRoot.querySelector("#btn-add-cal").addEventListener("click", () => this._addCalendar());
+    this.shadowRoot.querySelectorAll("[data-remove-idx]").forEach(btn =>
+      btn.addEventListener("click", () => this._removeCalendar(parseInt(btn.dataset.removeIdx))));
+    this.shadowRoot.querySelectorAll("[data-cal-idx]").forEach(el =>
+      el.addEventListener("change", () => this._updateCalendar(parseInt(el.dataset.calIdx), el.dataset.calField, el.value)));
+    this.shadowRoot.querySelector("#sel-sensor-pending").addEventListener("change", e => this._updateNested("sensors", "pending", e.target.value));
+    this.shadowRoot.querySelector("#sel-sensor-sync").addEventListener("change", e => this._updateNested("sensors", "sync", e.target.value));
+  }
+}
+
+customElements.define("katja-schedule-card-editor", KatjaScheduleCardEditor);
