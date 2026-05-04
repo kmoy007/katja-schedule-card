@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.18.0";
+const CARD_VERSION = "0.19.0";
 
 const THEMES = {
   dark: {
@@ -358,6 +358,7 @@ class KatjaScheduleCard extends HTMLElement {
 
     const showHeader = !locked || locked === "overview" || locked === "schedule";
     const showToggle = !locked;
+    const showThemeBtn = this._showThemeToggle;
 
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
@@ -376,6 +377,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
           </div>
         </div>` : ""}
+        ${!showHeader && showThemeBtn ? `<div class="floating-theme"><button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button></div>` : ""}
         ${body}${modal}
       </div></ha-card>`;
 
@@ -612,6 +614,7 @@ class KatjaScheduleCard extends HTMLElement {
         cursor: pointer; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
         transition: all 0.15s; }
       .theme-btn:hover { color: ${t.headerText}; border-color: var(--accent); }
+      .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: 300px; }
       .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: ${t.accentBg}; }
       .days { padding: 8px 0; }
@@ -859,18 +862,23 @@ class KatjaScheduleCardEditor extends HTMLElement {
       `).join("")}
       <button class="add-btn" id="btn-add-cal">+ Add calendar</button>
 
-      <h3>Sensors (optional)</h3>
+      <h3>Sensors</h3>
+      <p style="font-size:12px;color:#888;margin:0 0 10px">
+        These are created by the Katja Schedule integration. They show
+        extra info in the card header. If you haven't set up the integration
+        yet, leave these empty — the card works without them.
+      </p>
       <div class="row">
-        <label>Pending review sensor</label>
+        <label>Pending review — shows a badge when events need your attention</label>
         <select id="sel-sensor-pending">
-          <option value="">None</option>
+          <option value="">None (no badge)</option>
           ${sensorEntities.map(e => `<option value="${e}" ${(c.sensors?.pending) === e ? "selected" : ""}>${e.replace("sensor.", "")}</option>`).join("")}
         </select>
       </div>
       <div class="row">
-        <label>Last sync sensor</label>
+        <label>Last sync — shows when the schedule was last refreshed from Google Calendar</label>
         <select id="sel-sensor-sync">
-          <option value="">None</option>
+          <option value="">None (no sync time)</option>
           ${sensorEntities.map(e => `<option value="${e}" ${(c.sensors?.sync) === e ? "selected" : ""}>${e.replace("sensor.", "")}</option>`).join("")}
         </select>
       </div>
