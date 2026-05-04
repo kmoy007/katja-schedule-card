@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.24.0";
+const CARD_VERSION = "0.25.0";
 
 const THEMES = {
   dark: {
@@ -51,6 +51,83 @@ const THEMES = {
     calDayBg: "rgba(255,220,180,0.03)", calTodayBg: "rgba(255,180,100,0.12)",
     weekendBg: "rgba(255,180,120,0.06)",
     modalBg: "#231e18", modalText: "#e8ddd0",
+  },
+  forest: {
+    name: "Forest",
+    cardBg: "#0F1F18", text: "#D8E6DC", muted: "#7A9384",
+    border: "rgba(120,200,150,0.08)", todayBg: "rgba(120,200,150,0.08)",
+    accent: "#7DCFA0", accentBg: "rgba(125,207,160,0.04)",
+    headerBg: "#0F1F18", headerText: "#E8F3EC",
+    eventHover: "rgba(125,207,160,0.04)",
+    calDayBg: "rgba(125,207,160,0.03)", calTodayBg: "rgba(125,207,160,0.12)",
+    weekendBg: "rgba(220,180,120,0.05)",
+    modalBg: "#162A21", modalText: "#D8E6DC",
+  },
+  rose: {
+    name: "Rose",
+    cardBg: "#FFF5F7", text: "#3A1F2A", muted: "#8C5A6F",
+    border: "#F2D6DD", todayBg: "rgba(214,80,118,0.06)",
+    accent: "#D65076", accentBg: "rgba(214,80,118,0.04)",
+    headerBg: "#FFF5F7", headerText: "#3A1F2A",
+    eventHover: "rgba(214,80,118,0.04)",
+    calDayBg: "#FBE9EE", calTodayBg: "rgba(214,80,118,0.10)",
+    weekendBg: "rgba(255,180,120,0.08)",
+    modalBg: "#FFF5F7", modalText: "#3A1F2A",
+  },
+  ocean: {
+    name: "Ocean",
+    cardBg: "#0A1A2A", text: "#CFE3F0", muted: "#6E90AC",
+    border: "rgba(100,180,230,0.08)", todayBg: "rgba(100,180,230,0.10)",
+    accent: "#4DB6E5", accentBg: "rgba(77,182,229,0.05)",
+    headerBg: "#0A1A2A", headerText: "#E8F4FB",
+    eventHover: "rgba(77,182,229,0.04)",
+    calDayBg: "rgba(77,182,229,0.03)", calTodayBg: "rgba(77,182,229,0.13)",
+    weekendBg: "rgba(255,200,140,0.04)",
+    modalBg: "#102438", modalText: "#CFE3F0",
+  },
+  sunset: {
+    name: "Sunset",
+    cardBg: "#21121A", text: "#F2DACE", muted: "#A87A78",
+    border: "rgba(255,150,120,0.10)", todayBg: "rgba(255,120,100,0.12)",
+    accent: "#FF7A6E", accentBg: "rgba(255,122,110,0.05)",
+    headerBg: "#21121A", headerText: "#FFE8DD",
+    eventHover: "rgba(255,150,120,0.05)",
+    calDayBg: "rgba(255,150,120,0.03)", calTodayBg: "rgba(255,122,110,0.14)",
+    weekendBg: "rgba(255,200,120,0.06)",
+    modalBg: "#2C1822", modalText: "#F2DACE",
+  },
+  mono: {
+    name: "Mono",
+    cardBg: "#FAFAFA", text: "#111111", muted: "#666666",
+    border: "#D9D9D9", todayBg: "rgba(0,0,0,0.05)",
+    accent: "#111111", accentBg: "rgba(0,0,0,0.03)",
+    headerBg: "#FAFAFA", headerText: "#000000",
+    eventHover: "rgba(0,0,0,0.04)",
+    calDayBg: "#F0F0F0", calTodayBg: "rgba(0,0,0,0.08)",
+    weekendBg: "rgba(0,0,0,0.04)",
+    modalBg: "#FFFFFF", modalText: "#111111",
+  },
+  highContrast: {
+    name: "High Contrast",
+    cardBg: "#000000", text: "#FFFFFF", muted: "#BBBBBB",
+    border: "rgba(255,255,255,0.25)", todayBg: "rgba(255,255,0,0.18)",
+    accent: "#FFD300", accentBg: "rgba(255,211,0,0.10)",
+    headerBg: "#000000", headerText: "#FFFFFF",
+    eventHover: "rgba(255,255,255,0.10)",
+    calDayBg: "rgba(255,255,255,0.06)", calTodayBg: "rgba(255,211,0,0.22)",
+    weekendBg: "rgba(255,255,255,0.04)",
+    modalBg: "#000000", modalText: "#FFFFFF",
+  },
+  sepia: {
+    name: "Sepia",
+    cardBg: "#F4ECD8", text: "#3B2F1F", muted: "#7A6A50",
+    border: "#D9C8A4", todayBg: "rgba(120,80,40,0.08)",
+    accent: "#8C5A2B", accentBg: "rgba(140,90,43,0.05)",
+    headerBg: "#F4ECD8", headerText: "#2A2014",
+    eventHover: "rgba(120,80,40,0.05)",
+    calDayBg: "#EDE2C5", calTodayBg: "rgba(140,90,43,0.12)",
+    weekendBg: "rgba(180,140,80,0.10)",
+    modalBg: "#FAF3DF", modalText: "#3B2F1F",
   },
 };
 
