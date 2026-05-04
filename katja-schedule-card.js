@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.9.0";
+const CARD_VERSION = "0.10.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -52,7 +52,7 @@ class KatjaScheduleCard extends HTMLElement {
   async _fetchEvents() {
     if (!this._hass || !this._config.calendars) return;
     this._lastFetch = Date.now();
-    const now = new Date();
+    const now = this._pacificNow();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const end = new Date(start); end.setDate(end.getDate() + 21);
     const all = [];
@@ -88,8 +88,9 @@ class KatjaScheduleCard extends HTMLElement {
   // ====================== HELPERS ======================
 
   _fmt(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
-  _todayStr() { return this._fmt(new Date()); }
-  _tomorrowStr() { const t = new Date(); t.setDate(t.getDate()+1); return this._fmt(t); }
+  _pacificNow() { return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })); }
+  _todayStr() { return this._fmt(this._pacificNow()); }
+  _tomorrowStr() { const t = this._pacificNow(); t.setDate(t.getDate()+1); return this._fmt(t); }
   _isToday(ds) { return ds === this._todayStr(); }
   _isTomorrow(ds) { return ds === this._tomorrowStr(); }
   _fmtTs(iso) { try { return new Date(iso).toLocaleString("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); } catch(_) { return iso; } }
@@ -128,13 +129,13 @@ class KatjaScheduleCard extends HTMLElement {
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
 
   _getDaysFromToday(n) {
-    const days = [], now = new Date();
+    const days = [], now = this._pacificNow();
     for (let i = 0; i < n; i++) { const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()+i); days.push(this._fmt(d)); }
     return days;
   }
 
   _getMonAlignedDays() {
-    const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const now = this._pacificNow(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const jsDay = today.getDay(), offset = jsDay === 0 ? -6 : 1 - jsDay;
     const mon = new Date(today); mon.setDate(today.getDate() + offset);
     const days = [];
