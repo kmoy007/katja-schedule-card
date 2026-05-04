@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.22.0";
+const CARD_VERSION = "0.23.0";
 
 const THEMES = {
   dark: {
@@ -382,11 +382,11 @@ class KatjaScheduleCard extends HTMLElement {
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
-            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">👁</button>
+            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🗑</button>
           </div>
         </div>` : ""}
         ${!showHeader ? `<div class="floating-theme">
-          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">👁</button>
+          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🗑</button>
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
         </div>` : ""}
         ${body}${modal}
