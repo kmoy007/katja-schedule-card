@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.11.0";
+const CARD_VERSION = "0.12.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -32,6 +32,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionLoading = false;
     this._actionResult = null;
     this._originPickerMode = false;
+    this._dayDetailDate = null;
   }
 
   set hass(hass) {
@@ -158,9 +159,11 @@ class KatjaScheduleCard extends HTMLElement {
     return { pendingCount, syncText };
   }
 
-  _switchView(v) { this._view = v; this._detailEvent = null; this._render(); }
+  _switchView(v) { this._view = v; this._detailEvent = null; this._dayDetailDate = null; this._render(); }
   _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._render(); }
   _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._render(); }
+  _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
+  _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
   // ====================== RECHECK ======================
 
@@ -238,7 +241,9 @@ class KatjaScheduleCard extends HTMLElement {
     else if (this._view === "schedule") body = this._renderSchedule(grouped);
     else body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
 
-    const modal = this._detailEvent ? this._renderDetailModal(this._detailEvent) : "";
+    const modal = this._detailEvent ? this._renderDetailModal(this._detailEvent)
+                : this._dayDetailDate ? this._renderDayDetailModal(this._dayDetailDate, grouped)
+                : "";
 
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
@@ -262,9 +267,22 @@ class KatjaScheduleCard extends HTMLElement {
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => this._openDetail(this._events[parseInt(el.dataset.eventIdx)])));
-    this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => this._closeDetail());
+    this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
+      if (this._detailEvent) this._closeDetail();
+      else if (this._dayDetailDate) this._closeDayDetail();
+    });
     const backdrop = this.shadowRoot.querySelector(".modal-backdrop");
-    if (backdrop) backdrop.addEventListener("click", (e) => { if (e.target === backdrop) this._closeDetail(); });
+    if (backdrop) backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) {
+        if (this._detailEvent) this._closeDetail();
+        else if (this._dayDetailDate) this._closeDayDetail();
+      }
+    });
+    this.shadowRoot.querySelectorAll("[data-day-date]").forEach(el =>
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("[data-event-idx]")) return; // let event clicks through
+        this._openDayDetail(el.dataset.dayDate);
+      }));
     this.shadowRoot.querySelector(".recheck-drive")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
@@ -397,6 +415,27 @@ class KatjaScheduleCard extends HTMLElement {
       </div>`;
   }
 
+  // ====================== DAY DETAIL MODAL ======================
+
+  _renderDayDetailModal(ds, grouped) {
+    const events = grouped[ds] || [];
+    const dateLabel = this._formatDateHeader(ds);
+    return `
+      <div class="modal-backdrop">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-dot" style="background:#4ECDC4"></span>
+            <span class="modal-title">${dateLabel}</span>
+            <button class="modal-close">✕</button>
+          </div>
+          <div class="modal-body" style="padding: 8px 16px;">
+            ${events.length === 0 ? '<div class="no-events">No events</div>' :
+              events.map(ev => this._renderEvent(ev)).join("")}
+          </div>
+        </div>
+      </div>`;
+  }
+
   // ====================== OVERVIEW / SCHEDULE / CALENDAR ======================
 
   _renderOverview(grouped) {
@@ -431,7 +470,7 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.map(ev=>{const isDrive=this._isDrive(ev.summary||"");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.map(ev=>{const isDrive=this._isDrive(ev.summary||"");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
   }
 
   // ====================== STYLES ======================
