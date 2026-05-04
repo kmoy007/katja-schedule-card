@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.14.0";
+const CARD_VERSION = "0.15.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -504,14 +504,14 @@ class KatjaScheduleCard extends HTMLElement {
       .toggle-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; transition: all 0.15s; }
       .toggle-btn.active { background: rgba(255,255,255,0.12); color: #fff; }
       .toggle-btn:hover:not(.active) { color: #ccc; }
-      .overview-top { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border-bottom: 1px solid var(--border); }
-      .overview-col:first-child { border-right: 1px solid var(--border); }
+      .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: 300px; }
+      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid #4ECDC4; background: rgba(78,205,196,0.04); }
       .days { padding: 8px 0; }
       .day { padding: 0 20px; margin-bottom: 4px; }
       .day-header { display: flex; align-items: center; gap: 10px; padding: 14px 4px 10px; font-weight: 600; font-size: 16px; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
       .day.is-today .day-header { color: #fff; font-size: 22px; }
       .day.is-tomorrow .day-header { color: #ccc; font-size: 19px; }
-      .day.is-today { background: var(--today-bg); border-radius: 12px; padding-top: 4px; padding-bottom: 8px; margin-bottom: 8px; }
+      .day.is-today { background: var(--today-bg); border-radius: 12px; padding-top: 8px; padding-bottom: 12px; margin-bottom: 8px; }
       .day-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
       .day.is-today .day-dot { background: #4ECDC4; width: 10px; height: 10px; }
       .day.is-tomorrow .day-dot { background: #45B7D1; }
@@ -532,20 +532,21 @@ class KatjaScheduleCard extends HTMLElement {
       .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(78,205,196,0.15); color: #4ECDC4; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 8px; }
       .no-events { padding: 8px 4px; font-size: 15px; color: rgba(255,255,255,0.2); font-style: italic; }
       .weekend .day-header { color: rgba(255,180,120,0.7); }
-      .cal-grid { padding: 12px 16px; }
-      .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 6px; }
-      .cal-header-cell { text-align: center; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; }
-      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
-      .cal-day { background: rgba(255,255,255,0.03); border-radius: 8px; padding: 6px; }
-      .cal-today { background: var(--today-bg); outline: 2px solid #4ECDC4; outline-offset: -2px; }
-      .cal-outside { opacity: 0.3; } .cal-past { opacity: 0.4; }
+      .cal-grid { padding: 8px 12px; }
+      .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px; }
+      .cal-header-cell { text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
+      .cal-day { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 4px; min-height: 60px; overflow: hidden; }
+      .cal-today { background: rgba(78,205,196,0.1); outline: 2px solid #4ECDC4; outline-offset: -2px; }
+      .cal-outside { opacity: 0.25; }
+      .cal-past { opacity: 0.35; }
       .cal-weekend { background: rgba(255,180,120,0.04); }
-      .cal-date { font-size: 16px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
-      .cal-today .cal-date { color: #4ECDC4; font-size: 18px; }
-      .cal-events { display: flex; flex-direction: column; gap: 2px; }
-      .cal-event { padding: 4px 8px; border-radius: 4px; background: rgba(255,255,255,0.05); font-size: 13px; line-height: 1.35; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 5px; align-items: baseline; }
-      .cal-event-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-      .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: #d0d0d0; font-size: 13px; }
+      .cal-date { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
+      .cal-today .cal-date { color: #4ECDC4; font-size: 15px; }
+      .cal-events { display: flex; flex-direction: column; gap: 1px; }
+      .cal-event { padding: 2px 4px; border-radius: 3px; background: rgba(255,255,255,0.05); font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
+      .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+      .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: #d0d0d0; font-size: 11px; }
       .cal-drive { opacity: 0.5; font-style: italic; }
 
       /* Modal */
