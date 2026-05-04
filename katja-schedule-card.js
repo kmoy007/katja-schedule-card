@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.10.0";
+const CARD_VERSION = "0.11.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -54,7 +54,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._lastFetch = Date.now();
     const now = this._pacificNow();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const end = new Date(start); end.setDate(end.getDate() + 21);
+    const end = new Date(start); end.setDate(end.getDate() + 35);
     const all = [];
     for (const cal of this._config.calendars) {
       try {
@@ -135,11 +135,10 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _getMonAlignedDays() {
+    // Start from today, show 28 days (4 weeks)
     const now = this._pacificNow(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const jsDay = today.getDay(), offset = jsDay === 0 ? -6 : 1 - jsDay;
-    const mon = new Date(today); mon.setDate(today.getDate() + offset);
     const days = [];
-    for (let i = 0; i < 14; i++) { const d = new Date(mon); d.setDate(mon.getDate()+i); days.push(this._fmt(d)); }
+    for (let i = 0; i < 28; i++) { const d = new Date(today); d.setDate(today.getDate()+i); days.push(this._fmt(d)); }
     return days;
   }
 
