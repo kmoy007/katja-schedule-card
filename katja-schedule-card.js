@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.20.0";
+const CARD_VERSION = "0.21.0";
 
 const THEMES = {
   dark: {
@@ -81,6 +81,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._originPickerMode = false;
     this._dayDetailDate = null;
     this._theme = "dark";
+    this._showFlagged = false;
   }
 
   set hass(hass) {
@@ -208,6 +209,8 @@ class KatjaScheduleCard extends HTMLElement {
 
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
+  _isFlagged(s) { return s && (s.includes("⚠") || s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
+  _toggleFlagged() { this._showFlagged = !this._showFlagged; this._render(); }
   _hasAddress(ev) { return !!(ev.location && ev.location.trim().length > 3); }
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
 
@@ -379,15 +382,20 @@ class KatjaScheduleCard extends HTMLElement {
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
+            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🚫</button>
           </div>
         </div>` : ""}
-        ${!showHeader && showThemeBtn ? `<div class="floating-theme"><button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button></div>` : ""}
+        ${!showHeader ? `<div class="floating-theme">
+          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled/skipped">🚫</button>
+          ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
+        </div>` : ""}
         ${body}${modal}
       </div></ha-card>`;
 
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
+    this.shadowRoot.querySelector("#flagged-toggle")?.addEventListener("click", () => this._toggleFlagged());
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => this._openDetail(this._events[parseInt(el.dataset.eventIdx)])));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._detailEvent) this._closeDetail();
@@ -578,10 +586,13 @@ class KatjaScheduleCard extends HTMLElement {
 
   _renderEvent(ev) {
     const summary = ev.summary||"", isDrive = this._isDrive(summary), idx = this._events.indexOf(ev);
+    const flagged = this._isFlagged(summary);
+    if (flagged && !this._showFlagged) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
     if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${m[1]}</span>`; }
-    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${ev._color||"#888"}"></span>${summary} ${flightBadge}</div>${ev.location?`<div class="event-location">${ev.location}</div>`:""}</div></div>`;
+    const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
+    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${ev._color||"#888"}"></span>${summary} ${flightBadge}</div>${ev.location?`<div class="event-location">${ev.location}</div>`:""}</div></div>`;
   }
 
   _renderCalendarGrid(days, grouped) {
@@ -592,7 +603,7 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.map(ev=>{const isDrive=this._isDrive(ev.summary||"");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev.summary||"")).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev.summary||"");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
   }
 
   // ====================== STYLES ======================
@@ -618,7 +629,11 @@ class KatjaScheduleCard extends HTMLElement {
         cursor: pointer; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
         transition: all 0.15s; }
       .theme-btn:hover { color: ${t.headerText}; border-color: var(--accent); }
-      .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; }
+      .flagged-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
+        cursor: pointer; padding: 4px 8px; border-radius: 12px; font-size: 11px; transition: all 0.15s; }
+      .flagged-btn:hover { border-color: var(--accent); }
+      .flagged-btn.active { background: rgba(255,100,100,0.15); color: #FF6B6B; border-color: #FF6B6B; }
+      .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: 300px; }
       .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: ${t.accentBg}; }
       .days { padding: 8px 0; }
