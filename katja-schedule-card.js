@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.27.0";
+const CARD_VERSION = "0.28.0";
 
 // Theme tokens fall back to these when a theme leaves them unset, so older
 // color-only themes keep working unchanged.
@@ -588,6 +588,16 @@ class KatjaScheduleCard extends HTMLElement {
     } else {
       this._lockedView = null;
     }
+    // seam: where adjacent cards abut. Flattens border-radius on those edges
+    // and drops the shadow so siblings inside a horizontal-stack /
+    // vertical-stack visually butt together. Accepts a string ("right"),
+    // CSV ("right,bottom"), or array (["right","bottom"]).
+    const seamRaw = config.seam || "";
+    const seamList = Array.isArray(seamRaw) ? seamRaw : String(seamRaw).split(/[,\s]+/);
+    this._seam = new Set(
+      seamList.map(s => String(s).trim().toLowerCase())
+              .filter(s => ["left","right","top","bottom"].includes(s))
+    );
     this._render();
   }
 
@@ -892,9 +902,10 @@ class KatjaScheduleCard extends HTMLElement {
     const showToggle = !locked;
     const showThemeBtn = this._showThemeToggle;
 
+    const seamClasses = Array.from(this._seam).map(s => ` seam-${s}`).join("");
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
-      <ha-card><div class="card${locked ? " card-locked" : ""}">
+      <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
         ${showHeader ? `<div class="header">
           <span class="title">${this._config.title || "Family Schedule"}</span>
           ${showToggle ? `<div class="view-toggle">
@@ -1159,6 +1170,14 @@ class KatjaScheduleCard extends HTMLElement {
         --header-text: ${t.headerText}; }
       .card { background: var(--card-bg); border-radius: var(--radius); overflow: hidden; position: relative; box-shadow: ${t.cardShadow}; }
       .card-locked { border-radius: var(--radius-sm); }
+      /* Seam mode — when adjacent cards abut, flatten the touching corners
+         and drop the shadow so the cards visually butt together. Pair with
+         a horizontal-stack / vertical-stack to remove HA's grid gap. */
+      .card.seam-left  { border-top-left-radius: 0;  border-bottom-left-radius: 0;  }
+      .card.seam-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+      .card.seam-top   { border-top-left-radius: 0;  border-top-right-radius: 0;    }
+      .card.seam-bottom{ border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+      .card.seam-left, .card.seam-right, .card.seam-top, .card.seam-bottom { box-shadow: none; }
       .header { display: flex; align-items: center; justify-content: space-between; padding: ${d.cardPad}; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: ${d.headerGap}; }
       .header .title { font-family: var(--font-display); font-size: ${t.titleSize}; font-weight: ${t.titleWeight}; letter-spacing: ${t.titleLetterSpacing}; text-transform: ${t.titleTransform}; color: var(--header-text); line-height: 1.1; }
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 14px; color: var(--muted); }
@@ -1373,6 +1392,9 @@ class KatjaScheduleCardEditor extends HTMLElement {
         input:focus, select:focus { outline: none; border-color: #4ECDC4; }
         .toggle-row { display: flex; align-items: center; gap: 10px; }
         .toggle-row input[type="checkbox"] { width: auto; }
+        .seam-row { display: flex; gap: 12px; flex-wrap: wrap; }
+        .seam-chk { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #ccc; text-transform: capitalize; cursor: pointer; }
+        .seam-chk input { width: auto; }
         .cal-item { display: grid; grid-template-columns: 1fr 80px 80px 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
         .cal-item input { font-size: 12px; padding: 6px; }
         .cal-item select { font-size: 12px; padding: 6px; }
@@ -1412,6 +1434,22 @@ class KatjaScheduleCardEditor extends HTMLElement {
       <div class="row toggle-row">
         <input type="checkbox" id="chk-theme-toggle" ${c.show_theme_toggle ? "checked" : ""}>
         <label style="display:inline;margin:0">Show theme toggle button</label>
+      </div>
+
+      <div class="row">
+        <label>Seam — flatten the touching edges so this card butts against neighbors</label>
+        <p style="font-size:11px;color:#888;margin:0 0 6px">
+          Tick the side(s) where another card sits. Pair with a
+          <code>horizontal-stack</code> / <code>vertical-stack</code> wrapper
+          to also remove HA's grid gap. Leave empty for a free-standing card.
+        </p>
+        <div class="seam-row">
+          ${["left","right","top","bottom"].map(side => {
+            const set = new Set((Array.isArray(c.seam) ? c.seam : String(c.seam || "").split(/[,\s]+/))
+              .map(s => String(s).trim().toLowerCase()).filter(Boolean));
+            return `<label class="seam-chk"><input type="checkbox" data-seam="${side}" ${set.has(side) ? "checked" : ""}> ${side}</label>`;
+          }).join("")}
+        </div>
       </div>
 
       <h3>Calendars</h3>
@@ -1461,6 +1499,13 @@ class KatjaScheduleCardEditor extends HTMLElement {
     this.shadowRoot.querySelector("#sel-theme").addEventListener("change", e => this._update("theme", e.target.value));
     this.shadowRoot.querySelector("#sel-view").addEventListener("change", e => this._update("view", e.target.value));
     this.shadowRoot.querySelector("#chk-theme-toggle").addEventListener("change", e => this._update("show_theme_toggle", e.target.checked));
+    this.shadowRoot.querySelectorAll("[data-seam]").forEach(box => {
+      box.addEventListener("change", () => {
+        const sides = Array.from(this.shadowRoot.querySelectorAll("[data-seam]"))
+          .filter(b => b.checked).map(b => b.dataset.seam);
+        this._update("seam", sides.length ? sides.join(",") : "");
+      });
+    });
     this.shadowRoot.querySelector("#btn-add-cal").addEventListener("click", () => this._addCalendar());
     this.shadowRoot.querySelectorAll("[data-remove-idx]").forEach(btn =>
       btn.addEventListener("click", () => this._removeCalendar(parseInt(btn.dataset.removeIdx))));
