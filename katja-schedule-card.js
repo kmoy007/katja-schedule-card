@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.15.0";
+const CARD_VERSION = "0.16.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
@@ -43,10 +43,23 @@ class KatjaScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config.calendars || !config.calendars.length) throw new Error("Define at least one calendar entity.");
     this._config = { title: "Family Schedule", ...config };
+    // view config locks the card to a single view: today, tomorrow, calendar, schedule, overview
+    const locked = (config.view || "").toLowerCase();
+    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview"].includes(locked)) {
+      this._lockedView = locked;
+      this._view = locked === "today" || locked === "tomorrow" ? "schedule" : locked;
+    } else {
+      this._lockedView = null;
+    }
     this._render();
   }
 
-  getCardSize() { return 12; }
+  getCardSize() {
+    const v = this._lockedView;
+    if (v === "today" || v === "tomorrow") return 6;
+    if (v === "calendar") return 8;
+    return 12;
+  }
 
   // ====================== DATA ======================
 
@@ -251,30 +264,46 @@ class KatjaScheduleCard extends HTMLElement {
     const { pendingCount, syncText, buildInfo } = this._getSensorData();
 
     let body = "";
-    if (this._view === "overview") body = this._renderOverview(grouped);
-    else if (this._view === "schedule") body = this._renderSchedule(grouped);
-    else body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
+    const locked = this._lockedView;
+    if (locked === "today") {
+      const ds = this._todayStr();
+      body = this._renderDay(ds, grouped[ds] || []);
+    } else if (locked === "tomorrow") {
+      const ds = this._tomorrowStr();
+      body = this._renderDay(ds, grouped[ds] || []);
+    } else if (locked === "calendar") {
+      body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
+    } else if (this._view === "overview") {
+      body = this._renderOverview(grouped);
+    } else if (this._view === "schedule") {
+      body = this._renderSchedule(grouped);
+    } else {
+      body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
+    }
 
     const modal = this._detailEvent ? this._renderDetailModal(this._detailEvent)
                 : this._dayDetailDate ? this._renderDayDetailModal(this._dayDetailDate, grouped)
                 : "";
 
+    const showHeader = !locked || locked === "overview" || locked === "schedule";
+    const showToggle = !locked;
+
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
-      <ha-card><div class="card">
-        <div class="header">
+      <ha-card><div class="card${locked ? " card-locked" : ""}">
+        ${showHeader ? `<div class="header">
           <span class="title">${this._config.title || "Family Schedule"}</span>
-          <div class="view-toggle">
+          ${showToggle ? `<div class="view-toggle">
             ${["overview","schedule","calendar"].map(v =>
               `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${v[0].toUpperCase()+v.slice(1)}</button>`
             ).join("")}
-          </div>
+          </div>` : ""}
           <div class="meta">
             ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
             ${syncText ? `<span>Synced ${syncText}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
           </div>
-        </div>
+        </div>` : ""}
         ${body}${modal}
       </div></ha-card>`;
 
@@ -495,6 +524,7 @@ class KatjaScheduleCard extends HTMLElement {
         --card-bg: var(--ha-card-background, #1e1e2e); --today-bg: rgba(255,255,255,0.08);
         --border: rgba(255,255,255,0.08); --muted: #8a8a9a; }
       .card { background: var(--card-bg); border-radius: 16px; overflow: hidden; position: relative; }
+      .card-locked { border-radius: 12px; }
       .header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 12px; }
       .header .title { font-size: 26px; font-weight: 700; color: #fff; }
       .header .meta { display: flex; gap: 16px; align-items: center; font-size: 14px; color: var(--muted); }

@@ -34,6 +34,30 @@ sensors:
 
 Calendar entity names match the family members configured in the integration.
 
+### Single-view mode
+
+Lock a card to one view for flexible dashboard layouts:
+
+```yaml
+# Today's events only
+type: custom:katja-schedule-card
+view: today
+calendars: ...
+
+# Tomorrow's events only
+type: custom:katja-schedule-card
+view: tomorrow
+calendars: ...
+
+# 4-week calendar grid only
+type: custom:katja-schedule-card
+view: calendar
+calendars: ...
+```
+
+Options: `today`, `tomorrow`, `calendar`, `schedule`, `overview` (default: full card with toggle).
+Locked views hide the header and view toggle for a clean embedded look.
+
 ## Features
 
 - Schedule/Calendar view toggle
