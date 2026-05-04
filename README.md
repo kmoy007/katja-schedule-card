@@ -47,3 +47,5 @@ Calendar entity names match the family members configured in the integration.
 - Sticky day headers while scrolling
 - Mon–Sun week grid in calendar view
 - Auto-refreshes every 5 minutes
+
+# sync test

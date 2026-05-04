@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.13.0";
+const CARD_VERSION = "0.14.0";
 
 const PERSON_COLORS = {
   katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
