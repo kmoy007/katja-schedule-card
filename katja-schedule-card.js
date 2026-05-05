@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.31.0";
+const CARD_VERSION = "0.32.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -726,6 +726,7 @@ class KatjaScheduleCard extends HTMLElement {
             _color: cal.color || PERSON_COLORS[colorKey] || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
+            _eventId: meta.eventid || "",
           });
         }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
@@ -746,7 +747,7 @@ class KatjaScheduleCard extends HTMLElement {
       const m = line.match(/^\s*(\w+)\s*:\s*(.+)\s*$/);
       if (!m) continue;
       const k = m[1].toLowerCase();
-      if (k === "who" || k === "status" || k === "where" || k === "flight" || k === "source") {
+      if (k === "who" || k === "status" || k === "where" || k === "flight" || k === "source" || k === "eventid") {
         out[k] = m[2].trim();
       }
     }
@@ -945,6 +946,32 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionLoading = false; this._render();
   }
 
+  async _skipThisWeek(ev) {
+    if (!this._hass || !ev?._eventId) return;
+    const what = (ev.summary || "").trim();
+    const ok = confirm(
+      `Skip "${what}" for this week?\n\n` +
+      "The event stays on the schedule (with a ⚠️ prefix and crossed out) " +
+      "so you remember it was on the calendar — and it returns automatically " +
+      "next week."
+    );
+    if (!ok) return;
+    this._actionLoading = true; this._render();
+    try {
+      this._actionResult = await this._hass.callWS({
+        type: "katja_schedule/skip_week",
+        event_id: ev._eventId,
+      });
+      // Trigger a re-fetch so the prefixed/strikethrough form shows up.
+      this._lastFetch = 0;
+      this._closeDetail();
+      this._fetchEvents();
+    } catch (e) {
+      this._actionResult = { ok: false, error: e.message };
+    }
+    this._actionLoading = false; this._render();
+  }
+
   // ====================== RENDER ======================
 
   _render() {
@@ -1029,6 +1056,7 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
+    this.shadowRoot.querySelector(".skip-week-btn")?.addEventListener("click", () => this._skipThisWeek(this._detailEvent));
     this.shadowRoot.querySelector(".action-update")?.addEventListener("click", () => {
       const r = this._recheckResult, ev = this._detailEvent;
       if (!r || !ev) return;
@@ -1062,6 +1090,18 @@ class KatjaScheduleCard extends HTMLElement {
     const isDrive = this._isDrive(summary), isFlight = this._isFlight(summary);
     const hasAddress = this._hasAddress(ev), hasArrow = this._hasArrow(ev);
     const color = ev._color || "#888";
+
+    // Skip-this-week — only meaningful for accepted overlay events that
+    // haven't been skipped/cancelled already. Mirrors the web app's flow.
+    const flagged = this._isFlagged(ev);
+    const status = ev._status || "";
+    const isAccepted = !!ev._eventId && !flagged
+      && status !== "new" && status !== "changed"
+      && status !== "conflict" && status !== "orphan";
+    let skipSection = "";
+    if (isAccepted) {
+      skipSection = `<button class="skip-week-btn" ${this._actionLoading?"disabled":""}>⚠️ Skip this week</button>`;
+    }
 
     // Recheck section
     let recheckSection = "";
@@ -1152,6 +1192,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${recheckSection}
             ${resultSection}
             ${actionSection}
+            ${skipSection}
           </div>
         </div>
       </div>`;
@@ -1407,6 +1448,9 @@ class KatjaScheduleCard extends HTMLElement {
 
       /* Recheck */
       .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
+      .skip-week-btn { display: block; width: 100%; margin-top: 12px; padding: 12px; border: 1px solid #E08890; border-radius: var(--radius-sm); background: rgba(255,199,206,0.15); color: #E08890; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .skip-week-btn:hover { background: rgba(255,199,206,0.25); }
+      .skip-week-btn:disabled { opacity: 0.5; cursor: wait; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
 
