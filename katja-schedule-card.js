@@ -5,7 +5,22 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.30.0";
+const CARD_VERSION = "0.31.0";
+
+/** Escape any string that originates from external data (calendar events,
+ *  Google Maps responses, flight APIs) before it lands in an innerHTML
+ *  template. A malicious calendar invite could otherwise inject markup
+ *  into the HA dashboard's shadow DOM. Cheap and idempotent — call it on
+ *  every interpolated value that isn't a literal we control. */
+function _esc(s) {
+  if (s == null) return "";
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 // Theme tokens fall back to these when a theme leaves them unset, so older
 // color-only themes keep working unchanged.
@@ -664,17 +679,41 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== DATA ======================
 
+  /** Build an ISO timestamp anchored at Pacific midnight on the given
+   *  Y/M/D — independent of the browser's local timezone. Without this,
+   *  loading the dashboard from a non-Pacific browser shifts the fetch
+   *  range by the local UTC offset and we miss late-night events near
+   *  midnight Pacific (or pull in extra previous-day events). */
+  _pacificISOAtMidnight(year, month, day) {
+    // Look up Pacific's UTC offset on that date (PST/PDT swap).
+    const probe = new Date(Date.UTC(year, month, day, 12));
+    const tz = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles", timeZoneName: "shortOffset",
+    }).formatToParts(probe).find(p => p.type === "timeZoneName")?.value || "GMT-08:00";
+    // tz looks like "GMT-7" or "GMT-8"; normalize to "-07:00" / "-08:00".
+    const m = tz.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+    const sign = m?.[1] || "-";
+    const hh = String(m?.[2] || "8").padStart(2, "0");
+    const mm = (m?.[3] || "00").padStart(2, "0");
+    const yyyy = String(year).padStart(4, "0");
+    const mo = String(month + 1).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    return `${yyyy}-${mo}-${dd}T00:00:00${sign}${hh}:${mm}`;
+  }
+
   async _fetchEvents() {
     if (!this._hass || !this._config.calendars) return;
     this._lastFetch = Date.now();
     const now = this._pacificNow();
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const end = new Date(start); end.setDate(end.getDate() + 35);
+    // Pacific-anchored range — see _pacificISOAtMidnight.
+    const startISO = this._pacificISOAtMidnight(now.getFullYear(), now.getMonth(), now.getDate());
+    const endProbe = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 35);
+    const endISO = this._pacificISOAtMidnight(endProbe.getFullYear(), endProbe.getMonth(), endProbe.getDate());
     const all = [];
     for (const cal of this._config.calendars) {
       try {
         const events = await this._hass.callApi("GET",
-          `calendars/${cal.entity}?start=${start.toISOString()}&end=${end.toISOString()}`);
+          `calendars/${encodeURIComponent(cal.entity)}?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`);
         for (const ev of events || []) {
           // Integration v0.12+ encodes Who/Status as `Key: value` lines in
           // description. Parse those out so the card can color-by-person and
@@ -944,7 +983,7 @@ class KatjaScheduleCard extends HTMLElement {
       <style>${this._getStyles()}</style>
       <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
         ${showHeader ? `<div class="header">
-          <span class="title">${this._config.title || "Family Schedule"}</span>
+          <span class="title">${_esc(this._config.title || "Family Schedule")}</span>
           ${showToggle ? `<div class="view-toggle">
             ${["overview","schedule","calendar"].map(v =>
               `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${v[0].toUpperCase()+v.slice(1)}</button>`
@@ -952,15 +991,15 @@ class KatjaScheduleCard extends HTMLElement {
           </div>` : ""}
           <div class="meta">
             ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
-            ${syncText ? `<span>Synced ${syncText}</span>` : ""}
-            <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${buildInfo}` : ""}</span>
-            ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
+            ${syncText ? `<span>Synced ${_esc(syncText)}</span>` : ""}
+            <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${_esc(buildInfo)}` : ""}</span>
+            ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
             <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
           </div>
         </div>` : ""}
         ${!showHeader ? `<div class="floating-theme">
           <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
-          ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${THEMES[this._theme].name}</button>` : ""}
+          ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
         </div>` : ""}
         ${body}${modal}
       </div></ha-card>`;
@@ -1056,34 +1095,34 @@ class KatjaScheduleCard extends HTMLElement {
 
         let trafficLine;
         if (r.has_traffic === false) {
-          trafficLine = `<div class="traffic-warn">⚠️ <strong>No traffic data</strong> — base estimate only. Actual time may be longer.<br><span class="traffic-meta">${depTime} · Checked ${checkedAt}</span></div>`;
+          trafficLine = `<div class="traffic-warn">⚠️ <strong>No traffic data</strong> — base estimate only. Actual time may be longer.<br><span class="traffic-meta">${_esc(depTime)} · Checked ${_esc(checkedAt)}</span></div>`;
         } else {
-          trafficLine = `<div class="traffic-ok">⚡ Includes ${r.traffic_note||"current traffic"} estimate${r.duration_without_traffic_text ? ` (${r.duration_without_traffic_text} without traffic)` : ""}<br><span class="traffic-meta">${depTime} · Checked ${checkedAt}</span></div>`;
+          trafficLine = `<div class="traffic-ok">⚡ Includes ${_esc(r.traffic_note||"current traffic")} estimate${r.duration_without_traffic_text ? ` (${_esc(r.duration_without_traffic_text)} without traffic)` : ""}<br><span class="traffic-meta">${_esc(depTime)} · Checked ${_esc(checkedAt)}</span></div>`;
         }
 
         // Action buttons
         let actions = "";
         if (!this._actionResult) {
           if (isDrive) {
-            actions = `<button class="action-btn action-update" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Updating...": `✓ Update to ${r.duration_text} (with traffic)`}</button>`;
+            actions = `<button class="action-btn action-update" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Updating...": `✓ Update to ${_esc(r.duration_text)} (with traffic)`}</button>`;
           } else {
-            actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${r.duration_text} drive row before this event (with traffic)`}</button>`;
+            actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${_esc(r.duration_text)} drive row before this event (with traffic)`}</button>`;
           }
         }
 
         resultSection = `<div class="recheck-result ok">
-          <div class="recheck-route"><span class="recheck-label">From:</span> ${o.resolved||o.input||"?"}</div>
-          <div class="recheck-route"><span class="recheck-label">To:</span> ${d.resolved||d.input||"?"}</div>
-          <div class="recheck-duration"><strong>${r.duration_text}</strong></div>
+          <div class="recheck-route"><span class="recheck-label">From:</span> ${_esc(o.resolved||o.input||"?")}</div>
+          <div class="recheck-route"><span class="recheck-label">To:</span> ${_esc(d.resolved||d.input||"?")}</div>
+          <div class="recheck-duration"><strong>${_esc(r.duration_text)}</strong></div>
           ${trafficLine}
-          <div class="recheck-via">${r.distance_text} via ${r.summary||"—"}</div>
+          <div class="recheck-via">${_esc(r.distance_text)} via ${_esc(r.summary||"—")}</div>
           ${actions}
         </div>`;
       } else if (r.ok && r.status) {
         const est = r.estimated_arrival_local || r.destination?.scheduled_local || "";
-        resultSection = `<div class="recheck-result ok"><strong>${r.status}</strong>${est?" — arrival "+est:""}${r.gate?" · gate "+r.gate:""}</div>`;
+        resultSection = `<div class="recheck-result ok"><strong>${_esc(r.status)}</strong>${est?" — arrival "+_esc(est):""}${r.gate?" · gate "+_esc(r.gate):""}</div>`;
       } else if (!r.ok) {
-        resultSection = `<div class="recheck-result err">${r.error || "Unknown error"}</div>`;
+        resultSection = `<div class="recheck-result err">${_esc(r.error || "Unknown error")}</div>`;
       }
     }
 
@@ -1091,9 +1130,9 @@ class KatjaScheduleCard extends HTMLElement {
     let actionSection = "";
     if (this._actionResult) {
       if (this._actionResult.ok) {
-        actionSection = `<div class="action-result ok">✓ ${this._actionResult.text || "Done"}</div>`;
+        actionSection = `<div class="action-result ok">✓ ${_esc(this._actionResult.text || "Done")}</div>`;
       } else {
-        actionSection = `<div class="action-result err">${this._actionResult.error || "Action failed"}</div>`;
+        actionSection = `<div class="action-result err">${_esc(this._actionResult.error || "Action failed")}</div>`;
       }
     }
 
@@ -1101,15 +1140,15 @@ class KatjaScheduleCard extends HTMLElement {
       <div class="modal-backdrop">
         <div class="modal">
           <div class="modal-header">
-            <span class="modal-dot" style="background:${color}"></span>
-            <span class="modal-title">${summary}</span>
+            <span class="modal-dot" style="background:${_esc(color)}"></span>
+            <span class="modal-title">${_esc(summary)}</span>
             <button class="modal-close">✕</button>
           </div>
           <div class="modal-body">
-            <div class="modal-row"><span class="modal-label">When</span><span>${dateLabel}, ${time}</span></div>
-            ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${location}</span></div>` : ""}
-            ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${description}</span></div>` : ""}
-            <div class="modal-row"><span class="modal-label">Who</span><span>${ev._label || "—"}</span></div>
+            <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
+            ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${_esc(location)}</span></div>` : ""}
+            ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(description)}</span></div>` : ""}
+            <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
             ${recheckSection}
             ${resultSection}
             ${actionSection}
@@ -1128,7 +1167,7 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="modal">
           <div class="modal-header">
             <span class="modal-dot" style="background:#4ECDC4"></span>
-            <span class="modal-title">${dateLabel}</span>
+            <span class="modal-title">${_esc(dateLabel)}</span>
             <button class="modal-close">✕</button>
           </div>
           <div class="modal-body" style="padding: 8px 16px;">
@@ -1171,10 +1210,11 @@ class KatjaScheduleCard extends HTMLElement {
     if (flagged && !this._showFlagged) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
-    if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${m[1]}</span>`; }
+    if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${_esc(m[1])}</span>`; }
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
-    const flaggedTag = flagged ? `<span class="flag-tag">${this._flaggedLabel(ev)}</span>` : "";
-    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${ev._color||"#888"}"></span>${summary} ${flightBadge}${flaggedTag}</div>${ev.location?`<div class="event-location">${ev.location}</div>`:""}</div></div>`;
+    const flaggedTag = flagged ? `<span class="flag-tag">${_esc(this._flaggedLabel(ev))}</span>` : "";
+    const colorAttr = _esc(ev._color || "#888");
+    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${_esc(summary)} ${flightBadge}${flaggedTag}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   _renderCalendarGrid(days, grouped) {
@@ -1185,7 +1225,7 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${ds}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${ev._color||"#888"}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${ev.summary||""}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${_esc(ev.summary||"")}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
   }
 
   // ====================== STYLES ======================
