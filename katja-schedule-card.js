@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.29.0";
+const CARD_VERSION = "0.30.0";
 
 // Theme tokens fall back to these when a theme leaves them unset, so older
 // color-only themes keep working unchanged.
@@ -42,6 +42,35 @@ const DENSITY = {
 };
 
 const THEMES = {
+  none: {
+    // Inherit colors, fonts, and shape from the active HA dashboard theme.
+    // Use this when the card should disappear into the rest of your view.
+    // Every token resolves to a HA CSS variable so a theme switch in HA
+    // (or a different dashboard) re-skins the card automatically.
+    name: "None (HA dashboard)",
+    cardBg: "var(--ha-card-background, var(--card-background-color, #fff))",
+    text: "var(--primary-text-color)",
+    muted: "var(--secondary-text-color)",
+    border: "var(--divider-color)",
+    todayBg: "color-mix(in srgb, var(--primary-color) 8%, transparent)",
+    accent: "var(--primary-color)",
+    accentBg: "color-mix(in srgb, var(--primary-color) 5%, transparent)",
+    headerBg: "var(--ha-card-background, var(--card-background-color))",
+    headerText: "var(--primary-text-color)",
+    eventHover: "color-mix(in srgb, var(--primary-text-color) 5%, transparent)",
+    calDayBg: "color-mix(in srgb, var(--primary-text-color) 3%, transparent)",
+    calTodayBg: "color-mix(in srgb, var(--primary-color) 12%, transparent)",
+    weekendBg: "color-mix(in srgb, var(--warning-color, #ffb060) 6%, transparent)",
+    modalBg: "var(--ha-card-background, var(--card-background-color, #fff))",
+    modalText: "var(--primary-text-color)",
+    font: "var(--paper-font-body1_-_font-family, var(--ha-font-family-body, 'Segoe UI', system-ui, sans-serif))",
+    fontDisplay: "var(--paper-font-headline_-_font-family, var(--ha-font-family-body, 'Segoe UI', system-ui, sans-serif))",
+    radius: "var(--ha-card-border-radius, 12px)",
+    radiusSm: "8px", radiusXs: "4px",
+    cardShadow: "var(--ha-card-box-shadow, none)",
+    eventTextStrong: "var(--primary-text-color)",
+    eventTextSoft: "var(--secondary-text-color)",
+  },
   dark: {
     name: "Dark",
     cardBg: "#1e1e2e", text: "#e0e0e0", muted: "#8a8a9a",
