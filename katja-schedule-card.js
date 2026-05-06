@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.32.0";
+const CARD_VERSION = "0.33.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -884,14 +884,26 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== RECHECK ======================
 
+  // Arrive-by ISO from an event's start (or null for all-day / undated).
+  // Sent as `arrival_time` to the backend so the recheck runs the
+  // convergence loop and returns "Leave by X · arrives by Y" — same
+  // experience the web app gives. All-day events fall through to
+  // live-traffic mode (no arrival_time → backend uses departure=now).
+  _arrivalISOFromEvent(ev) {
+    return ev?.start?.dateTime || null;
+  }
+
   async _recheckDriveWithOrigin(ev, origin) {
     if (!this._hass) return;
     this._recheckLoading = true; this._originPickerMode = false; this._render();
     try {
       const destination = ev.location || "";
-      this._recheckResult = await this._hass.callWS({
+      const msg = {
         type: "katja_schedule/refresh_drive", origin, destination,
-      });
+      };
+      const arrivalISO = this._arrivalISOFromEvent(ev);
+      if (arrivalISO) msg.arrival_time = arrivalISO;
+      this._recheckResult = await this._hass.callWS(msg);
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
     this._recheckLoading = false; this._render();
   }
@@ -913,9 +925,12 @@ class KatjaScheduleCard extends HTMLElement {
         this._recheckResult = { ok: false, error: "Could not parse origin → destination" };
         this._recheckLoading = false; this._render(); return;
       }
-      this._recheckResult = await this._hass.callWS({
+      const msg = {
         type: "katja_schedule/refresh_drive", origin, destination,
-      });
+      };
+      const arrivalISO = this._arrivalISOFromEvent(ev);
+      if (arrivalISO) msg.arrival_time = arrivalISO;
+      this._recheckResult = await this._hass.callWS(msg);
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
     this._recheckLoading = false; this._render();
   }
@@ -1150,10 +1165,26 @@ class KatjaScheduleCard extends HTMLElement {
           }
         }
 
+        // Arrive-by banner — green "Leave by X · arrives by Y" when
+        // the backend ran convergence; red "Running late" when the
+        // user can't make it in time. Mirrors the web app's recheck
+        // result panel (fr-2026-05-05-f / arrive-by convergence).
+        let arriveBanner = "";
+        if (r.degraded_from_late_departure) {
+          const proj = r.projected_arrival_local ? this._fmtTs(r.projected_arrival_local) : "—";
+          const tgt  = r.arrival_time_resolved   ? this._fmtTs(r.arrival_time_resolved)   : "—";
+          const lateStr = r.late_by_text ? `, ${_esc(r.late_by_text)} after target ${_esc(tgt)}` : "";
+          arriveBanner = `<div class="recheck-late">⚠️ <strong>Running late</strong> — ${_esc(r.duration_text)} drive in current traffic puts arrival at <strong>${_esc(proj)}</strong>${lateStr}.</div>`;
+        } else if (r.is_arrive_by) {
+          const dep = r.recommended_departure_local ? this._fmtTs(r.recommended_departure_local) : "—";
+          const arr = r.arrival_time_resolved        ? this._fmtTs(r.arrival_time_resolved)        : "—";
+          arriveBanner = `<div class="recheck-arrive">🚗 <strong>Leave by ${_esc(dep)}</strong> · arrives by ${_esc(arr)}</div>`;
+        }
         resultSection = `<div class="recheck-result ok">
+          ${arriveBanner}
           <div class="recheck-route"><span class="recheck-label">From:</span> ${_esc(o.resolved||o.input||"?")}</div>
           <div class="recheck-route"><span class="recheck-label">To:</span> ${_esc(d.resolved||d.input||"?")}</div>
-          <div class="recheck-duration"><strong>${_esc(r.duration_text)}</strong></div>
+          <div class="recheck-duration"><strong>${_esc(r.duration_text)}</strong>${r.duration_pessimistic_text && r.duration_pessimistic_text !== r.duration_text ? ` <span class="recheck-pessimistic">(up to ${_esc(r.duration_pessimistic_text)} worst-case)</span>` : ""}</div>
           ${trafficLine}
           <div class="recheck-via">${_esc(r.distance_text)} via ${_esc(r.summary||"—")}</div>
           ${actions}
@@ -1468,7 +1499,12 @@ class KatjaScheduleCard extends HTMLElement {
       .recheck-route { font-size: 13px; margin-bottom: 3px; color: var(--text-soft); }
       .recheck-label { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; margin-right: 4px; }
       .recheck-duration { margin-top: 8px; font-size: 18px; }
+      .recheck-pessimistic { font-size: 13px; color: var(--muted); }
       .recheck-via { font-size: 12px; color: var(--muted); margin-top: 4px; }
+      .recheck-arrive { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+                        background: rgba(46,139,87,0.12); color: #2E8B57; font-size: 14px; }
+      .recheck-late   { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+                        background: rgba(255,100,100,0.15); color: #B04030; font-size: 13px; }
       .traffic-ok { margin-top: 6px; font-size: 13px; color: var(--accent); }
       .traffic-warn { margin-top: 6px; font-size: 13px; color: #FF6B6B; background: rgba(255,100,100,0.1); padding: 8px; border-radius: var(--radius-sm); }
       .traffic-meta { font-size: 11px; opacity: 0.7; }
