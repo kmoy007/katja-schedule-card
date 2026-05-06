@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.33.0";
+const CARD_VERSION = "0.34.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -805,6 +805,39 @@ class KatjaScheduleCard extends HTMLElement {
 
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
+
+  // Mirror of templates/schedule.html's `_LA_AIRPORTS` so the wall
+  // display picks the same address the web app does. Drive-from-home
+  // makes sense for any Brentwood-adjacent airport in this set; the
+  // user picks home or work and the card routes home→airport
+  // (outbound) or airport→home (inbound) per the flight pair.
+  static _LA_AIRPORT_ADDRESSES = {
+    LAX: "1 World Way, Los Angeles, CA 90045",
+    BUR: "2627 N Hollywood Way, Burbank, CA 91505",
+    LGB: "4100 Donald Douglas Dr, Long Beach, CA 90808",
+    SNA: "18601 Airport Way, Santa Ana, CA 92707",
+    ONT: "2900 E Airport Dr, Ontario, CA 91761",
+  };
+
+  // Returns {address, iata, direction} for a flight calendar event,
+  // or null if the description doesn't carry a `Flight: <num> A→B`
+  // line. Direction is "outbound" when origin is LA-area, "inbound"
+  // when destination is LA-area; foreign-to-foreign legs fall back
+  // to outbound semantics with the origin IATA.
+  _flightAirportInfo(ev) {
+    const desc = ev?.description || "";
+    const m = desc.match(/Flight:\s*\S+\s+([A-Z]{3})\s*→\s*([A-Z]{3})/);
+    if (!m) return null;
+    const origin = m[1].toUpperCase(), destination = m[2].toUpperCase();
+    const map = this.constructor._LA_AIRPORT_ADDRESSES;
+    if (map[origin]) {
+      return { address: map[origin], iata: origin, direction: "outbound" };
+    }
+    if (map[destination]) {
+      return { address: map[destination], iata: destination, direction: "inbound" };
+    }
+    return { address: origin, iata: origin, direction: "outbound" };
+  }
   _isFlaggedText(s) { return s && (s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
   _isHiddenStatus(status) { return status === "hidden_rule" || status === "hidden_oneoff"; }
   _isFlagged(ev) {
@@ -893,11 +926,25 @@ class KatjaScheduleCard extends HTMLElement {
     return ev?.start?.dateTime || null;
   }
 
-  async _recheckDriveWithOrigin(ev, origin) {
+  async _recheckDriveWithOrigin(ev, originAlias) {
     if (!this._hass) return;
     this._recheckLoading = true; this._originPickerMode = false; this._render();
     try {
-      const destination = ev.location || "";
+      // For flight events, route the drive against the LA-area airport
+      // and invert direction for inbound (pickup) flights — same logic
+      // as the web app's flightAirportInfo / origin-picker swap
+      // (fr-2026-05-06-c). The originAlias the user tapped (home/work)
+      // becomes the start for outbound, the END for inbound.
+      const flightInfo = this._flightAirportInfo(ev);
+      let origin = originAlias, destination = ev.location || "";
+      if (flightInfo && flightInfo.address) {
+        if (flightInfo.direction === "inbound") {
+          origin = flightInfo.address;
+          destination = originAlias;
+        } else {
+          destination = flightInfo.address;
+        }
+      }
       const msg = {
         type: "katja_schedule/refresh_drive", origin, destination,
       };
@@ -1118,10 +1165,29 @@ class KatjaScheduleCard extends HTMLElement {
       skipSection = `<button class="skip-week-btn" ${this._actionLoading?"disabled":""}>⚠️ Skip this week</button>`;
     }
 
-    // Recheck section
+    // Recheck section. Flight events get TWO affordances side-by-side
+    // (matches the web's event-sheet UX from bug-20260505-122645):
+    // a Recheck Flight Status button on top, and below it an origin
+    // picker for "drive to/from the LA-area airport" with a label
+    // that swaps per direction (outbound: "to LAX from:", inbound:
+    // "from LAX to:").
     let recheckSection = "";
+    const flightInfo = isFlight ? this._flightAirportInfo(ev) : null;
     if (isFlight) {
       recheckSection = `<button class="recheck-btn recheck-flight" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Flight"}</button>`;
+      if (flightInfo) {
+        const lbl = flightInfo.direction === "inbound"
+          ? `Check drive time from ${flightInfo.iata} to:`
+          : `Check drive time to ${flightInfo.iata} from:`;
+        recheckSection += `
+          <div class="origin-picker" style="margin-top:10px">
+            <div class="origin-label">${_esc(lbl)}</div>
+            <div class="origin-buttons">
+              <button class="origin-btn" data-origin="home" ${this._recheckLoading?"disabled":""}>🏠 Home</button>
+              <button class="origin-btn" data-origin="nz consulate" ${this._recheckLoading?"disabled":""}>🏢 Work</button>
+            </div>
+          </div>`;
+      }
     } else if (isDrive && hasArrow) {
       recheckSection = `<button class="recheck-btn recheck-drive" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Drive Time"}</button>`;
     } else if (hasAddress) {
