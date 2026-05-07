@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.34.0";
+const CARD_VERSION = "0.34.1";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -1257,7 +1257,11 @@ class KatjaScheduleCard extends HTMLElement {
         </div>`;
       } else if (r.ok && r.status) {
         const est = r.estimated_arrival_local || r.destination?.scheduled_local || "";
-        resultSection = `<div class="recheck-result ok"><strong>${_esc(r.status)}</strong>${est?" — arrival "+_esc(est):""}${r.gate?" · gate "+_esc(r.gate):""}</div>`;
+        // 'unknown' = provider returned a status we couldn't classify; show
+        // a friendlier label so the rest of the row still reads cleanly.
+        // (mirrors web fix for bug-20260506-204817)
+        const statusLabel = r.status === "unknown" ? "Status pending" : r.status;
+        resultSection = `<div class="recheck-result ok"><strong>${_esc(statusLabel)}</strong>${est?" — arrival "+_esc(est):""}${r.gate?" · gate "+_esc(r.gate):""}</div>`;
       } else if (!r.ok) {
         resultSection = `<div class="recheck-result err">${_esc(r.error || "Unknown error")}</div>`;
       }
