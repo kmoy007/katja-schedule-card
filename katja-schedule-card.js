@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.34.1";
+const CARD_VERSION = "0.35.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -598,6 +598,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._config = {};
     this._hass = null;
     this._events = [];
+    this._pendingProposals = [];
     this._lastFetch = 0;
     this._fetchInterval = 5 * 60 * 1000;
     this._view = "overview";
@@ -737,7 +738,108 @@ class KatjaScheduleCard extends HTMLElement {
       if (!seen.has(key)) { seen.add(key); deduped.push(ev); }
     }
     this._events = deduped;
+    // Pull pending proposals in parallel so the schedule + REVIEW
+    // badges land in the same render pass. Best-effort: a failure
+    // here just means no badges this cycle, never blocks the fetch.
+    this._fetchPendingProposals();
     this._render();
+  }
+
+  async _fetchPendingProposals() {
+    if (!this._hass) return;
+    try {
+      const r = await this._hass.callWS({
+        type: "katja_schedule/list_pending_proposals",
+      });
+      this._pendingProposals = (r && r.proposals) || [];
+    } catch (e) {
+      // The integration may be older (no ws command yet) or unconfigured;
+      // either way, proceed without badges rather than break the card.
+      this._pendingProposals = [];
+    }
+    this._render();
+  }
+
+  /** Match a card-rendered event against the pending-proposal queue and
+   *  return {kind, id} when a proposal targets it, or null. Mirrors the
+   *  matching that renderer.merge_pending_proposals does on the web —
+   *  update/hide/accept/merge match by event_id (parsed from the
+   *  EventId: line in the calendar description); remove matches by
+   *  date + criteria; add proposals are surfaced as ghost rows
+   *  (handled separately during grouping, not here). */
+  _matchPendingProposal(ev) {
+    const proposals = this._pendingProposals || [];
+    if (!proposals.length) return null;
+    const evId = ev._eventId || "";
+    const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+    const summary = (ev.summary || "").toLowerCase();
+    const who = (ev._label || "").toLowerCase();
+    for (const p of proposals) {
+      const k = p.kind, args = p.args || {};
+      if (k === "update" || k === "hide" || k === "accept" || k === "merge") {
+        if (evId && (args.event_id || "") === evId) return {kind: k, id: p.id};
+      } else if (k === "remove") {
+        if (args.date && dateStr !== args.date) continue;
+        const wc = (args.what_contains || "").toLowerCase();
+        const ws = (args.what_starts_with || "").toLowerCase();
+        const wh = (args.who || "").toLowerCase();
+        if (wc && !summary.includes(wc)) continue;
+        if (ws && !summary.startsWith(ws)) continue;
+        if (wh && wh !== who) continue;
+        if (!wc && !ws && !wh && !args.date) continue; // tool guard requires ≥1
+        return {kind: "remove", id: p.id};
+      }
+    }
+    return null;
+  }
+
+  /** Synthesize ghost calendar events for pending `add` proposals so
+   *  the card shows what acceptance would create. Returns a list of
+   *  events shaped like the HA calendar API responses (start/end/
+   *  summary) plus the same _color/_label/_status/_eventId metadata
+   *  this._events carries, plus a _pendingProposal marker the
+   *  renderer reads to apply REVIEW styling.
+   *  fr-2026-05-07-d. */
+  _ghostEventsForPendingAdds() {
+    const out = [];
+    for (const p of this._pendingProposals || []) {
+      if (p.kind !== "add") continue;
+      const args = p.args || {};
+      if (!args.date) continue;
+      const who = (args.who || "").toLowerCase().split(",")[0]?.trim() || "";
+      const [y, m, d] = args.date.split("-").map(Number);
+      const t24 = this._timeTo24h(args.time || "") || "00:00:00";
+      const midnightISO = this._pacificISOAtMidnight(y, m - 1, d);
+      // _pacificISOAtMidnight returns "...T00:00:00±HH:MM"; swap the
+      // midnight clock for the proposal's actual time.
+      const startISO = midnightISO.replace("T00:00:00", `T${t24}`);
+      out.push({
+        summary: args.what || "(unnamed)",
+        start: {dateTime: startISO},
+        end: {dateTime: ""},
+        description: `Where: ${args.where || ""}\nWho: ${args.who || ""}`,
+        _color: PERSON_COLORS[who] || "#888",
+        _label: args.who || "",
+        _status: "",
+        _eventId: "",
+        _pendingProposal: {kind: "add", id: p.id},
+      });
+    }
+    return out;
+  }
+
+  /** Convert "9:00 AM" / "14:30" / "" to "HH:MM:SS" for the ghost
+   *  start.dateTime construction. Returns "" if unparseable. */
+  _timeTo24h(s) {
+    if (!s) return "";
+    const m = s.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!m) return "";
+    let h = parseInt(m[1]);
+    const min = m[2];
+    const ampm = (m[3] || "").toUpperCase();
+    if (ampm === "PM" && h !== 12) h += 12;
+    if (ampm === "AM" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${min}:00`;
   }
 
   _parseEventMeta(description) {
@@ -1038,7 +1140,28 @@ class KatjaScheduleCard extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    const grouped = this._groupByDate(this._events);
+    // Fold pending proposals into the visible event list (fr-2026-05-07-d):
+    //  - update/hide/accept/merge → annotate matched event with _pendingProposal
+    //  - remove → annotate; the row stays visible (the deletion is what's
+    //    pending, not the disappearance) so the user sees what acceptance
+    //    would drop
+    //  - add → synthesize a ghost calendar event so the proposed row
+    //    appears on its target day even though no real calendar event
+    //    backs it yet
+    let working;
+    if (this._pendingProposals?.length) {
+      working = this._events.map(ev => {
+        const m = this._matchPendingProposal(ev);
+        return m ? {...ev, _pendingProposal: m} : ev;
+      });
+      working = working.concat(this._ghostEventsForPendingAdds());
+    } else {
+      working = this._events;
+    }
+    // _renderEvent and the click handler index into _renderedEvents
+    // (this can include ghost rows that aren't in this._events).
+    this._renderedEvents = working;
+    const grouped = this._groupByDate(working);
     const { pendingCount, syncText, buildInfo } = this._getSensorData();
 
     let body = "";
@@ -1097,7 +1220,16 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
-    this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => this._openDetail(this._events[parseInt(el.dataset.eventIdx)])));
+    this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => {
+      const ev = (this._renderedEvents || this._events)[parseInt(el.dataset.eventIdx)];
+      if (!ev) return;
+      // Ghost rows for pending `add` proposals don't back any
+      // calendar event — they're a render-time visualization only.
+      // Acting on them happens from the web schedule (Approve/Reject
+      // inline). Skip the detail modal in that case.
+      const isGhost = ev._pendingProposal?.kind === "add" && !ev._eventId;
+      if (!isGhost) this._openDetail(ev);
+    }));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._detailEvent) this._closeDetail();
       else if (this._dayDetailDate) this._closeDayDetail();
@@ -1347,16 +1479,32 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _renderEvent(ev) {
-    const summary = ev.summary||"", isDrive = this._isDrive(summary), idx = this._events.indexOf(ev);
+    const summary = ev.summary||"", isDrive = this._isDrive(summary);
+    const idx = (this._renderedEvents || this._events).indexOf(ev);
     const flagged = this._isFlagged(ev);
     if (flagged && !this._showFlagged) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
     if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${_esc(m[1])}</span>`; }
+    // fr-2026-05-07-d: pending-proposal badge in parity with web. The
+    // _pendingProposal annotation comes from the render-time fold of
+    // this._pendingProposals (matchPendingProposal + ghost adds).
+    const pending = ev._pendingProposal;
+    let pendingTag = "", pendingClass = "", pendingStyle = "";
+    if (pending) {
+      const labels = {add: "REVIEW · NEW", update: "REVIEW · CHANGE",
+                       remove: "REVIEW · DELETE", hide: "REVIEW · HIDE",
+                       accept: "REVIEW · ACCEPT", merge: "REVIEW · MERGE"};
+      pendingTag = `<span class="pending-tag pending-${pending.kind}" title="Agent proposed — pending your review on the web schedule.">${labels[pending.kind] || "REVIEW"}</span>`;
+      pendingClass = ` is-pending pending-${pending.kind}`;
+      if (pending.kind === "remove") {
+        pendingStyle = " text-decoration:line-through; opacity:0.75;";
+      }
+    }
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
     const flaggedTag = flagged ? `<span class="flag-tag">${_esc(this._flaggedLabel(ev))}</span>` : "";
     const colorAttr = _esc(ev._color || "#888");
-    return `<div class="event${isDrive?" is-drive":""}" data-event-idx="${idx}" style="${flagStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${_esc(summary)} ${flightBadge}${flaggedTag}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${_esc(summary)} ${flightBadge}${pendingTag}${flaggedTag}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   _renderCalendarGrid(days, grouped) {
@@ -1367,7 +1515,14 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");return`<div class="cal-event${isDrive?" cal-drive":""}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${_esc(ev.summary||"")}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");
+    // fr-2026-05-07-d: pending events in the calendar grid get a
+    // dashed border + amber background (no room for a text pill).
+    // The "⚠" prefix in the title flags review state at a glance.
+    const pendingKind = ev._pendingProposal?.kind || "";
+    const pendingCls = pendingKind ? ` cal-pending cal-pending-${pendingKind}` : "";
+    const pendingPrefix = pendingKind ? "⚠ " : "";
+    return`<div class="cal-event${isDrive?" cal-drive":""}${pendingCls}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
   }
 
   // ====================== STYLES ======================
@@ -1514,6 +1669,15 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-drive .event-time { color: var(--muted); opacity: 0.6; }
       .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
       .flag-tag { display: inline-flex; align-items: center; background: rgba(255,100,100,0.15); color: #FF6B6B; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; }
+      /* fr-2026-05-07-d: pending-proposal badge in parity with web.
+         Amber for add/update (needs review), red for remove (would
+         delete). Dashed border on the row + amber tint signals "agent
+         proposed, not yet committed" without confusing the Calendar's
+         per-person color coding. */
+      .pending-tag { display: inline-flex; align-items: center; background: rgba(224,160,32,0.18); color: #E0A020; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
+      .pending-tag.pending-remove { background: rgba(200,64,30,0.18); color: #C8401E; }
+      .event.is-pending { border-left: 3px dashed #E0A020; padding-left: calc(var(--event-pad-h) - 3px); background: rgba(224,160,32,0.06); }
+      .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
       .cal-grid { padding: var(--cal-pad); }
@@ -1532,6 +1696,13 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
       .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-size: 11px; }
       .cal-drive { opacity: 0.5; font-style: italic; }
+      /* fr-2026-05-07-d: pending-proposal styling on the cal grid.
+         Border-left already encodes the per-person color, so the
+         pending state is signalled via a dashed RIGHT edge + amber
+         background tint. The ⚠ prefix on .cal-event-text flags it
+         even when a glance misses the dashed edge. */
+      .cal-event.cal-pending { background: rgba(224,160,32,0.18); border-right: 2px dashed #E0A020; padding-right: 2px; }
+      .cal-event.cal-pending-remove { background: rgba(200,64,30,0.18); border-right-color: #C8401E; text-decoration: line-through; opacity: 0.85; }
 
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
