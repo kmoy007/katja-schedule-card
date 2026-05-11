@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.39.0";
+const CARD_VERSION = "0.39.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1064,10 +1064,14 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _getMonAlignedDays() {
-    // Start from today, show 28 days (4 weeks)
+    // Start from today, show 84 days (12 weeks). The Calendar view
+    // only renders ~3 weeks at a time; the rest is scrollable inside
+    // the .cal-grid container (max-height + overflow-y:auto added in
+    // v0.39.0). 12 weeks ≈ 3 months of look-ahead, enough for typical
+    // planning without making the scroll surface absurd.
     const now = this._pacificNow(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const days = [];
-    for (let i = 0; i < 28; i++) { const d = new Date(today); d.setDate(today.getDate()+i); days.push(this._fmt(d)); }
+    for (let i = 0; i < 84; i++) { const d = new Date(today); d.setDate(today.getDate()+i); days.push(this._fmt(d)); }
     return days;
   }
 
