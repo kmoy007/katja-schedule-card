@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.35.0";
+const CARD_VERSION = "0.36.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -1061,21 +1061,13 @@ class KatjaScheduleCard extends HTMLElement {
     if (!this._hass) return;
     this._recheckLoading = true; this._render();
     try {
-      let origin = "", destination = "";
-      for (const text of [ev.summary||"", ev.location||""]) {
-        const parts = text.split("→").map(s => s.trim());
-        if (parts.length >= 2 && parts[0] && parts[1]) {
-          origin = parts[0].replace(/^[🚗\s]*(?:drive\s+)?/i, "").trim();
-          destination = parts[1].trim();
-          break;
-        }
-      }
-      if (!origin || !destination) {
-        this._recheckResult = { ok: false, error: "Could not parse origin → destination" };
-        this._recheckLoading = false; this._render(); return;
-      }
+      // Hand the raw event fields to the server — it owns the drive-row
+      // parser now. Previously the card had its own regex which drifted
+      // from the web parser (bug-20260509-150030: card kept the buggy
+      // `^[🚗\s]*(?:drive\s+)?` regex after the web fix shipped May 9).
       const msg = {
-        type: "katja_schedule/refresh_drive", origin, destination,
+        type: "katja_schedule/refresh_drive",
+        event: { what: ev.summary || "", where: ev.location || "" },
       };
       const arrivalISO = this._arrivalISOFromEvent(ev);
       if (arrivalISO) msg.arrival_time = arrivalISO;
