@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.37.0";
+const CARD_VERSION = "0.37.1";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -628,6 +628,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._reviewInbox = null;
     this._reviewLoading = false;
     this._reviewActionPending = new Set();
+    this._reviewActionError = null;
   }
 
   set hass(hass) {
@@ -1090,12 +1091,45 @@ class KatjaScheduleCard extends HTMLElement {
     if (!this._hass) return;
     this._reviewLoading = true;
     this._render();
+    let result = null;
+    let inboxErr = null;
     try {
       const r = await this._hass.callWS({type: "katja_schedule/list_review_inbox"});
-      this._reviewInbox = (r && r.ok) ? r : {ok: false, groups: [], recurring_batches: [], count: 0};
+      if (r && r.ok) result = r;
+      else if (r) inboxErr = r.error || "Empty response from list_review_inbox";
     } catch (e) {
-      this._reviewInbox = {ok: false, error: e.message, groups: [], recurring_batches: [], count: 0};
+      inboxErr = e && e.message ? e.message : String(e);
     }
+    // Fallback path: list_review_inbox lives only in HA integration
+    // v0.18.0+. If the user updated the card via HACS but hasn't yet
+    // pulled the integration (or restarted HA so the new WS commands
+    // register), the modal would otherwise show "Nothing pending"
+    // despite the pill showing N. Drop back to list_pending_proposals
+    // (in every integration version since v0.15.0) and synthesise an
+    // inbox shape carrying just the agent proposals. Calendar
+    // NEW/CHANGED rows are not visible in this fallback — surface the
+    // gap as a banner so the user knows to update the integration.
+    if (!result) {
+      try {
+        const pp = await this._hass.callWS({type: "katja_schedule/list_pending_proposals"});
+        const proposals = (pp && pp.proposals) || [];
+        result = {
+          ok: true,
+          fallback: true,
+          fallback_reason: inboxErr || "list_review_inbox not available",
+          count: proposals.length,
+          groups: proposals.map(p => ({
+            event_id: "", calendar_item: null,
+            proposals: [p], is_group: false
+          })),
+          recurring_batches: [],
+        };
+      } catch (e2) {
+        result = {ok: false, groups: [], recurring_batches: [], count: 0,
+                   error: inboxErr || (e2 && e2.message) || String(e2)};
+      }
+    }
+    this._reviewInbox = result;
     this._reviewLoading = false;
     this._render();
     // Pull pending count + ghost rows back into the schedule view.
@@ -1110,11 +1144,18 @@ class KatjaScheduleCard extends HTMLElement {
     if (!this._hass) return;
     const ids = optimisticIds || [];
     for (const id of ids) this._reviewActionPending.add(id);
+    this._reviewActionError = null;
     this._render();
     try {
       await this._hass.callWS({type: wsType, ...(msgExtra || {})});
     } catch (e) {
       console.warn("KATJA review action failed:", wsType, e);
+      // Surface the failure so the user knows the action didn't run
+      // (most common cause: integration < v0.18.0 so the WS command
+      // isn't registered yet). Banner stays until the next refresh.
+      this._reviewActionError = (e && e.message)
+        ? `${wsType.replace("katja_schedule/", "")}: ${e.message}`
+        : `${wsType} failed`;
     }
     for (const id of ids) this._reviewActionPending.delete(id);
     await this._refreshReview();
@@ -1327,7 +1368,12 @@ class KatjaScheduleCard extends HTMLElement {
                 : "";
 
     const showHeader = !locked || locked === "overview" || locked === "schedule";
-    const showToggle = !locked;
+    // fr-2026-05-11-b (follow-up): hide the view-switcher pill on the
+    // Overview view — Ken's wall display already treats Overview as
+    // the home surface, so the pill at the top duplicates other
+    // navigation in the dashboard. Schedule + Calendar still carry
+    // the pill so the user has a way back to Overview from each.
+    const showToggle = !locked && this._view !== "overview";
     const showThemeBtn = this._showThemeToggle;
     // fr-2026-05-11-b: the global 🗑 only makes sense on the Calendar
     // view, where rows aren't grouped by day so a per-day chip would be
@@ -1553,7 +1599,26 @@ class KatjaScheduleCard extends HTMLElement {
         ${proposalIds.length ? `<button class="review-btn-bulk reject" data-review-action="rejectProposalsBatch" data-proposal-ids="${_esc(proposalIds.join(","))}"${dis}>Reject all ${proposalIds.length} proposals</button>` : ""}
       </div>` : "";
 
-      if (!body) body = bulkBar + batchesHtml + groupsHtml;
+      // Stacked banners above the body:
+      //   1. Fallback notice — list_review_inbox unavailable, showing
+      //      only agent proposals (no calendar NEW/CHANGED). Hint:
+      //      update the HA integration to v0.18.0+ for full parity.
+      //   2. Action error — last review action failed (often: WS
+      //      command not registered yet, same integration-version
+      //      cause). Keeps the queue visible so retries are one tap.
+      let banners = "";
+      if (inbox.fallback) {
+        banners += `<div class="review-banner review-banner-warn">
+          ⚠️ Limited view — update HA integration to v0.18.0+ for
+          calendar NEW/CHANGED parity. Showing agent proposals only.
+        </div>`;
+      }
+      if (this._reviewActionError) {
+        banners += `<div class="review-banner review-banner-err">
+          ❌ Action failed: ${_esc(this._reviewActionError)}
+        </div>`;
+      }
+      if (!body) body = banners + bulkBar + batchesHtml + groupsHtml;
     }
 
     return `<div class="modal-backdrop">
@@ -2120,6 +2185,15 @@ class KatjaScheduleCard extends HTMLElement {
       .review-loading, .review-empty, .review-error {
         text-align: center; padding: 32px 16px; color: var(--muted); }
       .review-error { color: #FF6B6B; }
+      /* Inline banners above the queue (fallback warning + action
+         error). Different from .review-error which takes over the
+         whole body — these keep the queue visible underneath. */
+      .review-banner { padding: 8px 12px; border-radius: var(--radius-sm);
+        font-size: 13px; line-height: 1.4; margin-bottom: 10px; }
+      .review-banner-warn { background: rgba(255,210,0,0.10);
+        border: 1px solid rgba(255,210,0,0.4); color: var(--text-strong); }
+      .review-banner-err { background: rgba(255,107,107,0.10);
+        border: 1px solid rgba(255,107,107,0.4); color: #FF6B6B; }
       .review-bulkbar { display: flex; flex-wrap: wrap; gap: 6px;
         padding: 8px 0 12px; border-bottom: 1px solid var(--border);
         margin-bottom: 12px; }
