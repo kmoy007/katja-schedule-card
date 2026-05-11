@@ -5,12 +5,12 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.38.1";
+const CARD_VERSION = "0.38.2";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
 // the same hour grid at the same scale.
-const DV_HOUR_PX = 40;
+const DV_HOUR_PX = 32;
 const DV_DAY_START = 6;
 const DV_DAY_END = 23;
 
@@ -2004,7 +2004,10 @@ class KatjaScheduleCard extends HTMLElement {
         if (endMin <= startMin) return "";
         const top = (startMin - DV_DAY_START * 60) / 60 * DV_HOUR_PX;
         const naturalPx = (endMin - startMin) / 60 * DV_HOUR_PX - 2;
-        const height = Math.max(18, naturalPx);
+        // Floor at 12px (tap-target minimum). Anything <26 min at
+        // 32 px/hr hits the floor and renders identically — the
+        // sub-half-hour bucket is the right granularity to collapse.
+        const height = Math.max(12, naturalPx);
         const isCompact = naturalPx < 32;
         const color = _esc(ev._color || "#888");
         const flagged = this._isFlagged(ev);
@@ -2263,13 +2266,19 @@ class KatjaScheduleCard extends HTMLElement {
       .dv-grid { padding: 4px 6px; }
       .dv-canvas {
         position: relative;
-        background:
-          repeating-linear-gradient(
-            to bottom,
-            transparent, transparent var(--hour-px, 40px),
-            rgba(127,127,127,0.18) var(--hour-px, 40px),
-            rgba(127,127,127,0.18) calc(var(--hour-px, 40px) + 1px)
-          );
+        /* 1px hour-line at the START of each --hour-px period. The
+           previous version put the line at --hour-px..--hour-px+1px,
+           silently making the period 41px and drifting 1px/hr from
+           the labels (visible in screenshots as misaligned grid
+           lines after a few hours). Putting it at the start makes
+           the period exactly --hour-px. */
+        background-image: repeating-linear-gradient(
+          to bottom,
+          rgba(127,127,127,0.18) 0,
+          rgba(127,127,127,0.18) 1px,
+          transparent 1px,
+          transparent var(--hour-px, 32px)
+        );
       }
       .dv-hours { position: absolute; left: 0; top: 0; width: 44px;
                   height: 100%; pointer-events: none;
