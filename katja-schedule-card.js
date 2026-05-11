@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.38.3";
+const CARD_VERSION = "0.39.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1435,9 +1435,21 @@ class KatjaScheduleCard extends HTMLElement {
     // and across everything in the calendar views"). Compute the count
     // up-front so the label can read "🗑 12" rather than just "🗑".
     const effectiveView = locked || this._view;
-    const showGlobalFlaggedToggle = effectiveView === "calendar";
+    // Global 🗑 toggle: surfaces on views where per-day chips alone
+    // aren't sufficient — the Calendar grid (no per-day headers to
+    // hang a chip from), and the Day View family (the per-day chip is
+    // there but only renders when that single day has flagged events,
+    // which leaves tomorrow with no toggle at all when only today
+    // has flagged rows — Ken's report).
+    const showGlobalFlaggedToggle = (
+      effectiveView === "calendar"
+      || effectiveView === "dayview"
+      || effectiveView === "dayview-today"
+    );
     const globalFlaggedCount = showGlobalFlaggedToggle
-      ? this._flaggedCountAcrossDays(grouped, this._getMonAlignedDays())
+      ? this._flaggedCountAcrossDays(grouped,
+          (effectiveView === "calendar" ? this._getMonAlignedDays()
+                                         : [this._todayStr(), this._tomorrowStr()]))
       : 0;
     const globalFlaggedBtnHTML = (showGlobalFlaggedToggle && globalFlaggedCount > 0)
       ? `<button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} ${globalFlaggedCount} cancelled/skipped/hidden across the grid">🗑 ${globalFlaggedCount}</button>`
@@ -2376,8 +2388,16 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
-      .cal-grid { padding: var(--cal-pad); }
-      .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px; }
+      /* Calendar grid — capped at ~3 weeks of visible rows then
+         scrollable. Saves vertical space on dashboards while still
+         allowing scroll-to-future. The header row stays sticky at
+         the top of the scroll viewport so the day-of-week labels
+         remain visible as the user scrolls weeks. */
+      .cal-grid { padding: var(--cal-pad);
+                  max-height: calc(var(--cal-min) * 3 + 56px);
+                  overflow-y: auto; }
+      .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px;
+                        position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
       .cal-header-cell { font-family: var(--font-display); text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: var(--cal-header-letter-spacing); padding: 4px 0; border-bottom: 1px solid var(--border); }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
       .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: var(--cal-min); overflow: hidden; }
