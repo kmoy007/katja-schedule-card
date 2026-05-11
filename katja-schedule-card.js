@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.38.2";
+const CARD_VERSION = "0.38.3";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -608,7 +608,9 @@ class KatjaScheduleCard extends HTMLElement {
     // (or the card is locked to dayview) so the line creeps.
     if (this._nowTickerId) return;
     this._nowTickerId = setInterval(() => {
-      if (this._view === "dayview" || this._lockedView === "dayview") {
+      if (this._view === "dayview"
+          || this._lockedView === "dayview"
+          || this._lockedView === "dayview-today") {
         this._render();
       }
     }, 60_000);
@@ -670,7 +672,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view: today, tomorrow, calendar, schedule, overview
     const locked = (config.view || "").toLowerCase();
-    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview"].includes(locked)) {
+    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today"].includes(locked)) {
       this._lockedView = locked;
       this._view = locked === "today" || locked === "tomorrow" ? "schedule" : locked;
     } else {
@@ -1401,6 +1403,8 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
     } else if (locked === "dayview") {
       body = this._renderDayView(grouped);
+    } else if (locked === "dayview-today") {
+      body = this._renderDayViewToday(grouped);
     } else if (this._view === "overview") {
       body = this._renderOverview(grouped);
     } else if (this._view === "dayview") {
@@ -1965,6 +1969,19 @@ class KatjaScheduleCard extends HTMLElement {
       <div class="dayview-row">
         <div class="dayview-col-list">${this._renderDay(tmrwDs, grouped[tmrwDs] || [])}</div>
         <div class="dayview-col-grid">${this._renderDayHourAxis(tmrwDs, grouped[tmrwDs] || [])}</div>
+      </div>
+    </div>`;
+  }
+
+  // Day View (today only) — single row variant of _renderDayView for
+  // dashboards where space is tight and only today's plan matters.
+  // Same per-row markup as Day View, just without the tomorrow row.
+  _renderDayViewToday(grouped) {
+    const todayDs = this._todayStr();
+    return `<div class="dayview-stack">
+      <div class="dayview-row">
+        <div class="dayview-col-list">${this._renderDay(todayDs, grouped[todayDs] || [])}</div>
+        <div class="dayview-col-grid">${this._renderDayHourAxis(todayDs, grouped[todayDs] || [])}</div>
       </div>
     </div>`;
   }
@@ -2657,6 +2674,7 @@ class KatjaScheduleCardEditor extends HTMLElement {
           <option value="" ${!c.view ? "selected" : ""}>Full card (Overview + toggle)</option>
           <option value="overview" ${c.view === "overview" ? "selected" : ""}>Overview only</option>
           <option value="dayview" ${c.view === "dayview" ? "selected" : ""}>Day View only (today + tomorrow with hour-grid)</option>
+          <option value="dayview-today" ${c.view === "dayview-today" ? "selected" : ""}>Day View only (today with hour-grid)</option>
           <option value="today" ${c.view === "today" ? "selected" : ""}>Today only</option>
           <option value="tomorrow" ${c.view === "tomorrow" ? "selected" : ""}>Tomorrow only</option>
           <option value="calendar" ${c.view === "calendar" ? "selected" : ""}>Calendar grid only</option>
