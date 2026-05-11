@@ -5,7 +5,14 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.37.2";
+const CARD_VERSION = "0.38.0";
+// Day View constants — kept aligned with the web template's
+// CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
+// templates/schedule.html ~line 5457) so the two surfaces render
+// the same hour grid at the same scale.
+const DV_HOUR_PX = 40;
+const DV_DAY_START = 6;
+const DV_DAY_END = 23;
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -592,6 +599,24 @@ const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 class KatjaScheduleCard extends HTMLElement {
+  connectedCallback() {
+    // Minute-ticker for the Day View NOW line. HA re-renders the card
+    // on every entity state change, but the wall display can go a
+    // full minute without one — so the red NOW rule would otherwise
+    // stay locked to whatever position it had at the last hass()
+    // update. Re-render every minute when the active view is dayview
+    // (or the card is locked to dayview) so the line creeps.
+    if (this._nowTickerId) return;
+    this._nowTickerId = setInterval(() => {
+      if (this._view === "dayview" || this._lockedView === "dayview") {
+        this._render();
+      }
+    }, 60_000);
+  }
+  disconnectedCallback() {
+    if (this._nowTickerId) { clearInterval(this._nowTickerId); this._nowTickerId = null; }
+  }
+
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -645,7 +670,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view: today, tomorrow, calendar, schedule, overview
     const locked = (config.view || "").toLowerCase();
-    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview"].includes(locked)) {
+    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview"].includes(locked)) {
       this._lockedView = locked;
       this._view = locked === "today" || locked === "tomorrow" ? "schedule" : locked;
     } else {
@@ -1374,8 +1399,12 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderDay(ds, grouped[ds] || []);
     } else if (locked === "calendar") {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
+    } else if (locked === "dayview") {
+      body = this._renderDayView(grouped);
     } else if (this._view === "overview") {
       body = this._renderOverview(grouped);
+    } else if (this._view === "dayview") {
+      body = this._renderDayView(grouped);
     } else if (this._view === "schedule") {
       body = this._renderSchedule(grouped);
     } else {
@@ -1417,8 +1446,8 @@ class KatjaScheduleCard extends HTMLElement {
         ${showHeader ? `<div class="header">
           <span class="title">${_esc(this._config.title || "Family Schedule")}</span>
           ${showToggle ? `<div class="view-toggle">
-            ${["overview","schedule","calendar"].map(v =>
-              `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${v[0].toUpperCase()+v.slice(1)}</button>`
+            ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"]].map(([v,label]) =>
+              `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${label}</button>`
             ).join("")}
           </div>` : ""}
           <div class="meta">
@@ -1922,6 +1951,97 @@ class KatjaScheduleCard extends HTMLElement {
     return `<div class="overview-top"><div class="overview-col"${this._panelStyle("today")}>${this._renderDay(todayDs, grouped[todayDs]||[])}</div><div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div></div><div class="overview-divider"></div><div${this._panelStyle("calendar")}>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}</div>`;
   }
 
+  // Day View — 4-cell layout matching the web template's dayview mode.
+  // Row 1: today list + today hour-axis grid. Row 2: tomorrow same.
+  // Mirrors templates/schedule.html buildOneDayGrid output shape so the
+  // two surfaces feel like the same UI.
+  _renderDayView(grouped) {
+    const todayDs = this._todayStr(), tmrwDs = this._tomorrowStr();
+    return `<div class="dayview-stack">
+      <div class="dayview-row">
+        <div class="dayview-col-list">${this._renderDay(todayDs, grouped[todayDs] || [])}</div>
+        <div class="dayview-col-grid">${this._renderDayHourAxis(todayDs, grouped[todayDs] || [])}</div>
+      </div>
+      <div class="dayview-row">
+        <div class="dayview-col-list">${this._renderDay(tmrwDs, grouped[tmrwDs] || [])}</div>
+        <div class="dayview-col-grid">${this._renderDayHourAxis(tmrwDs, grouped[tmrwDs] || [])}</div>
+      </div>
+    </div>`;
+  }
+
+  // Render a single day's vertical hour-axis grid. Hour labels in the
+  // left gutter, event blocks absolutely positioned by time. NOW line
+  // (red) only on today's column. Pacific time always.
+  _renderDayHourAxis(ds, events) {
+    const isToday = this._isToday(ds);
+    const totalHours = DV_DAY_END - DV_DAY_START + 1;
+    const canvasHeight = totalHours * DV_HOUR_PX;
+
+    // Hour labels (left gutter).
+    const hourLabels = [];
+    for (let h = DV_DAY_START; h <= DV_DAY_END; h++) {
+      const display = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
+      const top = (h - DV_DAY_START) * DV_HOUR_PX;
+      hourLabels.push(`<div class="dv-hour-lbl" style="top:${top}px">${display}</div>`);
+    }
+
+    // Event blocks. Only include events with concrete start+end datetimes
+    // (Pacific). All-day events show in the LIST column already; the
+    // hour-axis is just for timed events.
+    const blocks = (events || [])
+      .filter(ev => ev.start?.dateTime && ev.end?.dateTime)
+      .filter(ev => this._showFlagged || !this._isFlagged(ev))
+      .map((ev, idx) => {
+        const s = this._pacificTimeParts(ev.start.dateTime);
+        const e = this._pacificTimeParts(ev.end.dateTime);
+        if (!s || !e) return "";
+        const to24 = (p) => (p.ampm === "PM" && p.h !== 12 ? p.h + 12
+                              : p.ampm === "AM" && p.h === 12 ? 0 : p.h);
+        let startMin = to24(s) * 60 + s.m;
+        let endMin = to24(e) * 60 + e.m;
+        startMin = Math.max(startMin, DV_DAY_START * 60);
+        endMin = Math.min(endMin, (DV_DAY_END + 1) * 60);
+        if (endMin <= startMin) return "";
+        const top = (startMin - DV_DAY_START * 60) / 60 * DV_HOUR_PX;
+        const naturalPx = (endMin - startMin) / 60 * DV_HOUR_PX - 2;
+        const height = Math.max(18, naturalPx);
+        const isCompact = naturalPx < 32;
+        const color = _esc(ev._color || "#888");
+        const flagged = this._isFlagged(ev);
+        const isDrive = this._isDrive(ev.summary || "");
+        const pending = ev._pendingProposal?.kind || "";
+        const cls = `dv-event${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
+        const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
+        const timeStr = this._formatTime(ev);
+        const summary = _esc(ev.summary || "");
+        const where = ev.location ? `<div class="dv-ev-where">${_esc(ev.location)}</div>` : "";
+        return `<div class="${cls}" data-event-idx="${evIdx}" style="top:${top}px; height:${height}px; border-left: 3px solid ${color};">
+          <div class="dv-ev-time">${timeStr}</div>
+          <div class="dv-ev-what">${summary}</div>
+          ${isCompact ? "" : where}
+        </div>`;
+      }).join("");
+
+    // NOW line — only on today's column.
+    let nowLine = "";
+    if (isToday) {
+      const now = this._pacificNow();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      if (nowMin >= DV_DAY_START * 60 && nowMin <= (DV_DAY_END + 1) * 60) {
+        const top = (nowMin - DV_DAY_START * 60) / 60 * DV_HOUR_PX;
+        nowLine = `<div class="dv-now" style="top:${top}px"></div>`;
+      }
+    }
+
+    return `<div class="dv-grid">
+      <div class="dv-canvas" style="height:${canvasHeight}px; --hour-px:${DV_HOUR_PX}px">
+        <div class="dv-hours">${hourLabels.join("")}</div>
+        ${blocks}
+        ${nowLine}
+      </div>
+    </div>`;
+  }
+
   _renderSchedule(grouped) {
     return `<div class="days">${this._getDaysFromToday(14).map(ds => this._renderDay(ds, grouped[ds]||[])).join("")}</div>`;
   }
@@ -2122,6 +2242,75 @@ class KatjaScheduleCard extends HTMLElement {
       .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: var(--overview-min); }
       .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--accent-bg); }
+      /* Day View — two rows × two columns. Each row has list (left)
+         and hour-axis (right). Hour-axis hidden on narrow displays
+         (HA dashboards on phones) since the wall-display is the
+         primary surface for Day View. */
+      .dayview-stack { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+      .dayview-row { display: grid; grid-template-columns: 3fr 2fr; gap: 0;
+                      border: 1px solid var(--border); border-radius: var(--radius);
+                      overflow: hidden; }
+      .dayview-col-list { border-right: 1px solid var(--border); }
+      .dayview-col-grid { background: var(--card-bg); }
+      @media (max-width: 720px) {
+        .dayview-row { grid-template-columns: 1fr; }
+        .dayview-col-list { border-right: none; }
+        .dayview-col-grid { display: none; }
+      }
+      .dv-grid { padding: 4px 6px; }
+      .dv-canvas {
+        position: relative;
+        background:
+          repeating-linear-gradient(
+            to bottom,
+            transparent, transparent var(--hour-px, 40px),
+            rgba(127,127,127,0.18) var(--hour-px, 40px),
+            rgba(127,127,127,0.18) calc(var(--hour-px, 40px) + 1px)
+          );
+      }
+      .dv-hours { position: absolute; left: 0; top: 0; width: 44px;
+                  height: 100%; pointer-events: none;
+                  border-right: 1px solid var(--border); }
+      .dv-hour-lbl { position: absolute; left: 0; right: 4px;
+                     transform: translateY(-50%);
+                     font-size: 10px; color: var(--muted);
+                     text-align: right; font-variant-numeric: tabular-nums; }
+      .dv-event { position: absolute; left: calc(44px + 4px);
+                  right: 4px; box-sizing: border-box;
+                  padding: 3px 6px; border-radius: var(--radius-xs);
+                  overflow: hidden; cursor: pointer;
+                  background: var(--event-hover); color: var(--text-strong);
+                  font-size: 11.5px; line-height: 1.25; }
+      .dv-event:hover { filter: brightness(1.05); }
+      .dv-event.is-compact { padding: 1px 6px; }
+      .dv-event.is-compact .dv-ev-time { font-size: 9.5px; }
+      .dv-event.is-compact .dv-ev-what { font-size: 10.5px;
+                                          white-space: nowrap;
+                                          text-overflow: ellipsis; overflow: hidden; }
+      .dv-event.is-compact .dv-ev-where { display: none; }
+      .dv-event.is-flagged { opacity: 0.4; text-decoration: line-through; }
+      .dv-event.is-drive { font-style: italic; opacity: 0.85; }
+      .dv-event.is-pending {
+        border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
+      }
+      .dv-ev-time { font-size: 10px; color: var(--muted);
+                    font-variant-numeric: tabular-nums; font-weight: 600;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dv-ev-what { font-size: 12px; font-weight: 600;
+                    overflow: hidden; text-overflow: ellipsis;
+                    display: -webkit-box; -webkit-line-clamp: 2;
+                    -webkit-box-orient: vertical; }
+      .dv-ev-where { font-size: 10.5px; color: var(--muted);
+                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* NOW line — red rule + dot. JS positions on render; the minute
+         ticker re-renders the card so the line creeps. */
+      .dv-now { position: absolute; left: 44px; right: 0; height: 2px;
+                background: #D03030; z-index: 2; pointer-events: none;
+                box-shadow: 0 0 0 1px rgba(208,48,48,0.18); }
+      .dv-now::before { content: ""; position: absolute;
+                        left: -5px; top: -4px;
+                        width: 10px; height: 10px;
+                        background: #D03030; border-radius: 50%; }
       .days { padding: 8px 0; }
       .day { padding: var(--day-pad); margin-bottom: var(--day-spacing); }
       .day-header { display: flex; align-items: center; gap: 10px; padding: var(--day-header-pad); font-family: var(--font-display); font-weight: var(--day-header-weight); font-size: var(--day-header-size); text-transform: var(--day-header-transform); letter-spacing: var(--day-header-letter-spacing); color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
@@ -2455,6 +2644,7 @@ class KatjaScheduleCardEditor extends HTMLElement {
         <select id="sel-view">
           <option value="" ${!c.view ? "selected" : ""}>Full card (Overview + toggle)</option>
           <option value="overview" ${c.view === "overview" ? "selected" : ""}>Overview only</option>
+          <option value="dayview" ${c.view === "dayview" ? "selected" : ""}>Day View only (today + tomorrow with hour-grid)</option>
           <option value="today" ${c.view === "today" ? "selected" : ""}>Today only</option>
           <option value="tomorrow" ${c.view === "tomorrow" ? "selected" : ""}>Tomorrow only</option>
           <option value="calendar" ${c.view === "calendar" ? "selected" : ""}>Calendar grid only</option>
