@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.38.0";
+const CARD_VERSION = "0.38.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2247,7 +2247,10 @@ class KatjaScheduleCard extends HTMLElement {
          (HA dashboards on phones) since the wall-display is the
          primary surface for Day View. */
       .dayview-stack { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
-      .dayview-row { display: grid; grid-template-columns: 3fr 2fr; gap: 0;
+      /* Right column = 60% of its previous share: was 3fr/2fr
+         (60%/40%); now the grid column shrinks to 0.6×40% = 24% of
+         the row, leaving 76% for the list. 19fr/6fr ≈ 76%/24%. */
+      .dayview-row { display: grid; grid-template-columns: 19fr 6fr; gap: 0;
                       border: 1px solid var(--border); border-radius: var(--radius);
                       overflow: hidden; }
       .dayview-col-list { border-right: 1px solid var(--border); }
