@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.37.1";
+const CARD_VERSION = "0.37.2";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -902,25 +902,45 @@ class KatjaScheduleCard extends HTMLElement {
     return `${day}, ${month} ${d.getDate()}`;
   }
 
+  // Extract the {h, m, ampm} of an ISO timestamp as seen in Pacific
+  // time, not the viewer's local time. Without this, an HA dashboard
+  // viewed from a non-Pacific timezone displays event times in the
+  // viewer's TZ — e.g. a 10:00 AM Pacific event reads as 1:00 PM on
+  // an Eastern-time client. The schedule's audience is always LA.
+  _pacificTimeParts(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    }).formatToParts(d);
+    const get = (t) => (parts.find(p => p.type === t) || {}).value || "";
+    return {
+      h: parseInt(get("hour"), 10),
+      m: parseInt(get("minute"), 10),
+      ampm: get("dayPeriod"),
+    };
+  }
+
   _formatTime(ev) {
-    const dt = ev.start?.dateTime; if (!dt) return "All day";
-    const d = new Date(dt); let h = d.getHours(), m = d.getMinutes(), ampm = h >= 12 ? "PM" : "AM";
-    if (h > 12) h -= 12; if (h === 0) h = 12;
-    const mStr = m < 10 ? `0${m}` : m;
-    const endDt = ev.end?.dateTime;
-    if (endDt) {
-      const ed = new Date(endDt); let eh = ed.getHours(), em = ed.getMinutes(), eampm = eh >= 12 ? "PM" : "AM";
-      if (eh > 12) eh -= 12; if (eh === 0) eh = 12;
-      return ampm === eampm ? `${h}:${mStr}–${eh}:${em<10?"0"+em:em} ${eampm}` : `${h}:${mStr} ${ampm}–${eh}:${em<10?"0"+em:em} ${eampm}`;
-    }
-    return `${h}:${mStr} ${ampm}`;
+    const start = this._pacificTimeParts(ev.start?.dateTime);
+    if (!start) return "All day";
+    const sMin = start.m < 10 ? `0${start.m}` : start.m;
+    const end = this._pacificTimeParts(ev.end?.dateTime);
+    if (!end) return `${start.h}:${sMin} ${start.ampm}`;
+    const eMin = end.m < 10 ? `0${end.m}` : end.m;
+    return start.ampm === end.ampm
+      ? `${start.h}:${sMin}–${end.h}:${eMin} ${end.ampm}`
+      : `${start.h}:${sMin} ${start.ampm}–${end.h}:${eMin} ${end.ampm}`;
   }
 
   _formatTimeShort(ev) {
-    const dt = ev.start?.dateTime; if (!dt) return "";
-    const d = new Date(dt); let h = d.getHours(), m = d.getMinutes(), ap = h >= 12 ? "p" : "a";
-    if (h > 12) h -= 12; if (h === 0) h = 12;
-    return m === 0 ? `${h}${ap}` : `${h}:${m<10?"0"+m:m}${ap}`;
+    const start = this._pacificTimeParts(ev.start?.dateTime);
+    if (!start) return "";
+    const ap = start.ampm === "PM" ? "p" : "a";
+    return start.m === 0
+      ? `${start.h}${ap}`
+      : `${start.h}:${start.m < 10 ? `0${start.m}` : start.m}${ap}`;
   }
 
   _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
