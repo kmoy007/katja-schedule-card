@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.39.1";
+const CARD_VERSION = "0.39.3";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1005,7 +1005,20 @@ class KatjaScheduleCard extends HTMLElement {
     }
     return { address: origin, iata: origin, direction: "outbound" };
   }
-  _isFlaggedText(s) { return s && (s.toUpperCase().includes("CANCELLED") || s.toUpperCase().includes("SKIPPED")); }
+  _isFlaggedText(s) {
+    if (!s) return false;
+    const t = s.toUpperCase();
+    // The unified `calendar.schedule` entity encodes hidden status in
+    // a `Status: hidden_*` line in the description (caught by
+    // _isHiddenStatus). The ICS-fed `calendar.family_schedule` entity
+    // doesn't carry the description metadata — it instead prefixes
+    // the summary with 🗑 to flag hidden events. Match either so the
+    // card filters consistently regardless of which source the user
+    // configured.
+    return t.includes("CANCELLED")
+        || t.includes("SKIPPED")
+        || s.startsWith("🗑");
+  }
   _isHiddenStatus(status) { return status === "hidden_rule" || status === "hidden_oneoff"; }
   _isFlagged(ev) {
     // Accept either an event object or a summary string for back-compat.
@@ -2392,13 +2405,14 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
-      /* Calendar grid — capped at ~3 weeks of visible rows then
-         scrollable. Saves vertical space on dashboards while still
-         allowing scroll-to-future. The header row stays sticky at
-         the top of the scroll viewport so the day-of-week labels
-         remain visible as the user scrolls weeks. */
+      /* Calendar grid — show ~3 weeks comfortably (even when cells
+         grow past --cal-min because they're packed with event chips),
+         then scroll for the remaining weeks. The multiplier is 6×
+         --cal-min, not 3×, because cells often render at ~2× their
+         min-height once a few events fan into them. Header row stays
+         sticky so day-of-week labels remain visible during scroll. */
       .cal-grid { padding: var(--cal-pad);
-                  max-height: calc(var(--cal-min) * 3 + 56px);
+                  max-height: calc(var(--cal-min) * 6 + 60px);
                   overflow-y: auto; }
       .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px;
                         position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
