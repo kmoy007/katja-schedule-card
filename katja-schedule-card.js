@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.36.0";
+const CARD_VERSION = "0.37.0";
 
 /** Escape any string that originates from external data (calendar events,
  *  Google Maps responses, flight APIs) before it lands in an innerHTML
@@ -611,6 +611,23 @@ class KatjaScheduleCard extends HTMLElement {
     this._dayDetailDate = null;
     this._theme = "dark";
     this._showFlagged = false;
+    // fr-2026-05-11-a: per-day override of the global show-flagged
+    // state. Keyed by day-iso ("YYYY-MM-DD"). When global is OFF, a
+    // day in this set still surfaces its flagged events. When global
+    // toggles ON, the set is cleared (global already shows
+    // everything; per-day chips would look orphaned).
+    this._perDayFlagged = new Set();
+    // fr-2026-05-11-b: review modal state. Opens on pending-pill tap;
+    // mirrors the web /review page (calendar NEW/CHANGED rows folded
+    // with agent proposals + recurring-batches banner). Each Accept/
+    // Reject/Apply button calls a katja_schedule/* WS command that
+    // forwards to a bearer twin of the corresponding /events/* or
+    // /review/proposed/* route (server-side logic is unchanged so
+    // both surfaces share the same outcome).
+    this._reviewOpen = false;
+    this._reviewInbox = null;
+    this._reviewLoading = false;
+    this._reviewActionPending = new Set();
   }
 
   set hass(hass) {
@@ -957,7 +974,38 @@ class KatjaScheduleCard extends HTMLElement {
     if (s.includes("SKIPPED")) return "Skipped";
     return "";
   }
-  _toggleFlagged() { this._showFlagged = !this._showFlagged; console.info("KATJA: toggled flagged to", this._showFlagged); this._render(); }
+  _toggleFlagged() {
+    this._showFlagged = !this._showFlagged;
+    // fr-2026-05-11-a: clear per-day overrides when global flips ON —
+    // the global rule already shows everything, so per-day chips would
+    // be orphaned and their state would be confusing on next OFF.
+    if (this._showFlagged) this._perDayFlagged.clear();
+    console.info("KATJA: toggled flagged to", this._showFlagged);
+    this._render();
+  }
+  _toggleDayFlagged(ds) {
+    if (this._perDayFlagged.has(ds)) this._perDayFlagged.delete(ds);
+    else this._perDayFlagged.add(ds);
+    this._render();
+  }
+  _dayShowsFlagged(ds) {
+    return this._showFlagged || this._perDayFlagged.has(ds);
+  }
+  /** Count flagged (cancelled / skipped / rule-hidden) events on a
+   *  single day's event list. Drives the per-day 🗑 chip label
+   *  ("🗑 3") and the hide-when-zero rule so days with nothing to
+   *  reveal don't carry a chrome chip. fr-2026-05-11-b. */
+  _flaggedCountForDay(events) {
+    return (events || []).filter(ev => this._isFlagged(ev)).length;
+  }
+  /** Count flagged events across an arbitrary set of day-ISO strings.
+   *  Used for the Calendar-view global 🗑 label so the user knows
+   *  how many cancelled/skipped rows the grid currently hides. */
+  _flaggedCountAcrossDays(grouped, days) {
+    let n = 0;
+    for (const ds of (days || [])) n += this._flaggedCountForDay(grouped[ds] || []);
+    return n;
+  }
   _hasAddress(ev) { return !!(ev.location && ev.location.trim().length > 3); }
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
 
@@ -1016,6 +1064,105 @@ class KatjaScheduleCard extends HTMLElement {
   _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
+
+  // ====================== REVIEW MODAL (fr-2026-05-11-b) ====================
+  // Mirrors the web /review page so the user can apply/reject pending
+  // proposals AND accept/hide pending calendar NEW/CHANGED rows from
+  // HA without bouncing to the web app. All actions route through the
+  // katja_schedule/* WS commands → /api/actions/* bearer endpoints →
+  // the same server-side helpers the session-authed /events/* +
+  // /review/proposed/* routes use. The drift-prevention test ensures
+  // both surfaces stay aligned as new routes ship.
+
+  async _openReview() {
+    this._reviewOpen = true;
+    this._reviewLoading = true;
+    this._render();
+    await this._refreshReview();
+  }
+  _closeReview() {
+    this._reviewOpen = false;
+    this._reviewInbox = null;
+    this._reviewActionPending = new Set();
+    this._render();
+  }
+  async _refreshReview() {
+    if (!this._hass) return;
+    this._reviewLoading = true;
+    this._render();
+    try {
+      const r = await this._hass.callWS({type: "katja_schedule/list_review_inbox"});
+      this._reviewInbox = (r && r.ok) ? r : {ok: false, groups: [], recurring_batches: [], count: 0};
+    } catch (e) {
+      this._reviewInbox = {ok: false, error: e.message, groups: [], recurring_batches: [], count: 0};
+    }
+    this._reviewLoading = false;
+    this._render();
+    // Pull pending count + ghost rows back into the schedule view.
+    this._fetchPendingProposals();
+  }
+  /** Generic dispatcher: optimistically marks the targeted ids as
+   *  "in flight", fires the WS, then refreshes the inbox + schedule
+   *  on response (success or fail). Single source of "review action
+   *  ran" so we never end up with stale rows after a server-side
+   *  change. */
+  async _doReviewAction(wsType, msgExtra, optimisticIds) {
+    if (!this._hass) return;
+    const ids = optimisticIds || [];
+    for (const id of ids) this._reviewActionPending.add(id);
+    this._render();
+    try {
+      await this._hass.callWS({type: wsType, ...(msgExtra || {})});
+    } catch (e) {
+      console.warn("KATJA review action failed:", wsType, e);
+    }
+    for (const id of ids) this._reviewActionPending.delete(id);
+    await this._refreshReview();
+  }
+  // Per-row shortcuts the modal buttons + the inline event-detail
+  // sheet share (fr-2026-05-11-b inline parity).
+  _applyProposal(pe_id) {
+    return this._doReviewAction("katja_schedule/apply_proposal",
+                                  {pe_id}, [pe_id]);
+  }
+  _rejectProposal(pe_id) {
+    return this._doReviewAction("katja_schedule/reject_proposal",
+                                  {pe_id}, [pe_id]);
+  }
+  _acceptCalendarEvent(event_id) {
+    return this._doReviewAction("katja_schedule/accept_event",
+                                  {event_id}, [event_id]);
+  }
+  _hideCalendarEvent(event_id) {
+    return this._doReviewAction("katja_schedule/hide_event",
+                                  {event_id}, [event_id]);
+  }
+  // Bulk operations.
+  _acceptAllNew() {
+    return this._doReviewAction("katja_schedule/accept_all_new", {}, []);
+  }
+  _hideAllNew() {
+    return this._doReviewAction("katja_schedule/hide_all_new", {}, []);
+  }
+  _acceptAllChanged() {
+    return this._doReviewAction("katja_schedule/accept_all_changed", {}, []);
+  }
+  _acceptBatch(event_ids) {
+    return this._doReviewAction("katja_schedule/accept_batch",
+                                  {event_ids}, event_ids || []);
+  }
+  _hideBatch(event_ids) {
+    return this._doReviewAction("katja_schedule/hide_batch",
+                                  {event_ids}, event_ids || []);
+  }
+  _applyProposalsBatch(proposal_ids) {
+    return this._doReviewAction("katja_schedule/apply_proposals_batch",
+                                  {proposal_ids}, proposal_ids || []);
+  }
+  _rejectProposalsBatch(proposal_ids) {
+    return this._doReviewAction("katja_schedule/reject_proposals_batch",
+                                  {proposal_ids}, proposal_ids || []);
+  }
 
   // ====================== RECHECK ======================
 
@@ -1174,13 +1321,28 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
     }
 
-    const modal = this._detailEvent ? this._renderDetailModal(this._detailEvent)
+    const modal = this._reviewOpen ? this._renderReviewModal()
+                : this._detailEvent ? this._renderDetailModal(this._detailEvent)
                 : this._dayDetailDate ? this._renderDayDetailModal(this._dayDetailDate, grouped)
                 : "";
 
     const showHeader = !locked || locked === "overview" || locked === "schedule";
     const showToggle = !locked;
     const showThemeBtn = this._showThemeToggle;
+    // fr-2026-05-11-b: the global 🗑 only makes sense on the Calendar
+    // view, where rows aren't grouped by day so a per-day chip would be
+    // out of place. Overview + Schedule rely on the per-day chip Ken
+    // asked for ("show/hide should be per-day in the schedule views,
+    // and across everything in the calendar views"). Compute the count
+    // up-front so the label can read "🗑 12" rather than just "🗑".
+    const effectiveView = locked || this._view;
+    const showGlobalFlaggedToggle = effectiveView === "calendar";
+    const globalFlaggedCount = showGlobalFlaggedToggle
+      ? this._flaggedCountAcrossDays(grouped, this._getMonAlignedDays())
+      : 0;
+    const globalFlaggedBtnHTML = (showGlobalFlaggedToggle && globalFlaggedCount > 0)
+      ? `<button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} ${globalFlaggedCount} cancelled/skipped/hidden across the grid">🗑 ${globalFlaggedCount}</button>`
+      : "";
 
     const seamClasses = Array.from(this._seam).map(s => ` seam-${s}`).join("");
     this.shadowRoot.innerHTML = `
@@ -1194,15 +1356,15 @@ class KatjaScheduleCard extends HTMLElement {
             ).join("")}
           </div>` : ""}
           <div class="meta">
-            ${pendingCount > 0 ? `<span class="badge">${pendingCount} pending</span>` : ""}
+            ${pendingCount > 0 ? `<button class="badge pending-pill" id="open-review" title="Open review queue">${pendingCount} pending</button>` : ""}
             ${syncText ? `<span>Synced ${_esc(syncText)}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${_esc(buildInfo)}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
-            <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
+            ${globalFlaggedBtnHTML}
           </div>
         </div>` : ""}
         ${!showHeader ? `<div class="floating-theme">
-          <button class="flagged-btn${this._showFlagged ? " active" : ""}" id="flagged-toggle" title="${this._showFlagged ? "Hide" : "Show"} cancelled, skipped, and hidden events">🗑</button>
+          ${globalFlaggedBtnHTML}
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
         </div>` : ""}
         ${body}${modal}
@@ -1212,6 +1374,15 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
+    // fr-2026-05-11-a: per-day 🗑 buttons. Each carries data-day-flagged
+    // = the day-iso it controls.
+    this.shadowRoot.querySelectorAll(".day-flagged-btn").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ds = btn.getAttribute("data-day-flagged");
+        if (ds) this._toggleDayFlagged(ds);
+      });
+    });
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => {
       const ev = (this._renderedEvents || this._events)[parseInt(el.dataset.eventIdx)];
       if (!ev) return;
@@ -1223,15 +1394,43 @@ class KatjaScheduleCard extends HTMLElement {
       if (!isGhost) this._openDetail(ev);
     }));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
-      if (this._detailEvent) this._closeDetail();
+      if (this._reviewOpen) this._closeReview();
+      else if (this._detailEvent) this._closeDetail();
       else if (this._dayDetailDate) this._closeDayDetail();
     });
     const backdrop = this.shadowRoot.querySelector(".modal-backdrop");
     if (backdrop) backdrop.addEventListener("click", (e) => {
       if (e.target === backdrop) {
-        if (this._detailEvent) this._closeDetail();
+        if (this._reviewOpen) this._closeReview();
+        else if (this._detailEvent) this._closeDetail();
         else if (this._dayDetailDate) this._closeDayDetail();
       }
+    });
+    // fr-2026-05-11-b: review-modal open + per-action dispatcher.
+    this.shadowRoot.querySelector("#open-review")?.addEventListener("click",
+      (e) => { e.stopPropagation(); this._openReview(); });
+    this.shadowRoot.querySelectorAll("[data-review-action]").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const action = btn.getAttribute("data-review-action");
+        const peId = btn.getAttribute("data-pe-id") || "";
+        const evId = btn.getAttribute("data-event-id") || "";
+        const eventIds = (btn.getAttribute("data-event-ids") || "")
+          .split(",").map(s => s.trim()).filter(Boolean);
+        const proposalIds = (btn.getAttribute("data-proposal-ids") || "")
+          .split(",").map(s => s.trim()).filter(Boolean);
+        if (action === "applyProposal")  this._applyProposal(peId);
+        else if (action === "rejectProposal") this._rejectProposal(peId);
+        else if (action === "acceptEvent") this._acceptCalendarEvent(evId);
+        else if (action === "hideEvent")   this._hideCalendarEvent(evId);
+        else if (action === "acceptAllNew") this._acceptAllNew();
+        else if (action === "hideAllNew")   this._hideAllNew();
+        else if (action === "acceptAllChanged") this._acceptAllChanged();
+        else if (action === "acceptBatch")  this._acceptBatch(eventIds);
+        else if (action === "hideBatch")    this._hideBatch(eventIds);
+        else if (action === "applyProposalsBatch") this._applyProposalsBatch(proposalIds);
+        else if (action === "rejectProposalsBatch") this._rejectProposalsBatch(proposalIds);
+      });
     });
     this.shadowRoot.querySelectorAll("[data-day-date]").forEach(el =>
       el.addEventListener("click", (e) => {
@@ -1243,6 +1442,23 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
     this.shadowRoot.querySelector(".skip-week-btn")?.addEventListener("click", () => this._skipThisWeek(this._detailEvent));
+    // fr-2026-05-11-b: inline Accept/Reject on the event-detail sheet.
+    this.shadowRoot.querySelector(".inline-apply")?.addEventListener("click", async (e) => {
+      const id = e.currentTarget.getAttribute("data-pe-id");
+      if (id) { await this._applyProposal(id); this._closeDetail(); }
+    });
+    this.shadowRoot.querySelector(".inline-reject")?.addEventListener("click", async (e) => {
+      const id = e.currentTarget.getAttribute("data-pe-id");
+      if (id) { await this._rejectProposal(id); this._closeDetail(); }
+    });
+    this.shadowRoot.querySelector(".inline-accept-cal")?.addEventListener("click", async (e) => {
+      const id = e.currentTarget.getAttribute("data-event-id");
+      if (id) { await this._acceptCalendarEvent(id); this._closeDetail(); }
+    });
+    this.shadowRoot.querySelector(".inline-hide-cal")?.addEventListener("click", async (e) => {
+      const id = e.currentTarget.getAttribute("data-event-id");
+      if (id) { await this._hideCalendarEvent(id); this._closeDetail(); }
+    });
     this.shadowRoot.querySelector(".action-update")?.addEventListener("click", () => {
       const r = this._recheckResult, ev = this._detailEvent;
       if (!r || !ev) return;
@@ -1266,6 +1482,135 @@ class KatjaScheduleCard extends HTMLElement {
     });
   }
 
+  // ====================== REVIEW MODAL ======================
+
+  _renderReviewModal() {
+    const inbox = this._reviewInbox;
+    const loading = this._reviewLoading;
+    const pending = this._reviewActionPending;
+    let body = "";
+    if (loading || !inbox) {
+      body = `<div class="review-loading">Loading review queue…</div>`;
+    } else if (!inbox.ok && inbox.error) {
+      body = `<div class="review-error">Couldn't load review queue: ${_esc(inbox.error)}</div>`;
+    } else {
+      const batches = inbox.recurring_batches || [];
+      const groups = inbox.groups || [];
+      // Aggregate counts so the bulk-action buttons have honest labels.
+      const newIds = [], changedIds = [], proposalIds = [];
+      for (const g of groups) {
+        const ci = g.calendar_item || null;
+        if (ci) {
+          if (ci.status === "new") newIds.push(ci.event_id || "");
+          else if (ci.status === "changed") changedIds.push(ci.event_id || "");
+        }
+        for (const p of (g.proposals || [])) proposalIds.push(p.id);
+      }
+      const allDisabled = pending.size > 0;
+      const dis = allDisabled ? " disabled" : "";
+
+      // ---- Section: recurring batches ------------------------------
+      let batchesHtml = "";
+      if (batches.length) {
+        batchesHtml = `<div class="review-section">
+          <h3 class="review-section-title">Recurring batches</h3>
+          ${batches.map(b => {
+            const ids = b.event_ids || [];
+            const acceptingNow = ids.every(i => pending.has(i));
+            const aDis = (allDisabled || acceptingNow) ? " disabled" : "";
+            return `<div class="review-batch">
+              <div class="review-batch-summary">
+                <strong>${_esc(b.what || "")}</strong> · ${_esc(b.who || "")} ·
+                ${b.count} occurrences
+                <span class="review-batch-dates">${_esc((b.dates || []).slice(0,3).join(", "))}${(b.dates||[]).length>3?"…":""}</span>
+              </div>
+              <div class="review-actions">
+                <button class="review-btn accept" data-review-action="acceptBatch" data-event-ids="${_esc(ids.join(","))}"${aDis}>Accept all ${b.count}</button>
+                <button class="review-btn hide" data-review-action="hideBatch" data-event-ids="${_esc(ids.join(","))}"${aDis}>Hide all ${b.count}</button>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>`;
+      }
+
+      // ---- Section: groups (calendar items + standalone proposals) -
+      let groupsHtml = "";
+      if (groups.length) {
+        groupsHtml = `<div class="review-section">
+          <h3 class="review-section-title">${groups.length} item${groups.length===1?"":"s"} pending</h3>
+          ${groups.map(g => this._renderReviewGroup(g, pending, allDisabled)).join("")}
+        </div>`;
+      } else if (!batches.length) {
+        body = `<div class="review-empty">Nothing pending. 🎉</div>`;
+      }
+
+      // ---- Bulk action bar ---------------------------------------
+      const bulkBar = (groups.length + batches.length) > 0 ? `<div class="review-bulkbar">
+        ${newIds.length ? `<button class="review-btn-bulk accept" data-review-action="acceptAllNew"${dis}>Accept all ${newIds.length} new</button>` : ""}
+        ${newIds.length ? `<button class="review-btn-bulk hide" data-review-action="hideAllNew"${dis}>Hide all ${newIds.length} new</button>` : ""}
+        ${changedIds.length ? `<button class="review-btn-bulk accept" data-review-action="acceptAllChanged"${dis}>Accept all ${changedIds.length} changed</button>` : ""}
+        ${proposalIds.length ? `<button class="review-btn-bulk accept" data-review-action="applyProposalsBatch" data-proposal-ids="${_esc(proposalIds.join(","))}"${dis}>Apply all ${proposalIds.length} proposals</button>` : ""}
+        ${proposalIds.length ? `<button class="review-btn-bulk reject" data-review-action="rejectProposalsBatch" data-proposal-ids="${_esc(proposalIds.join(","))}"${dis}>Reject all ${proposalIds.length} proposals</button>` : ""}
+      </div>` : "";
+
+      if (!body) body = bulkBar + batchesHtml + groupsHtml;
+    }
+
+    return `<div class="modal-backdrop">
+      <div class="modal review-modal">
+        <div class="modal-header">
+          <span class="modal-title">Review queue</span>
+          <button class="modal-close">✕</button>
+        </div>
+        <div class="modal-body review-body">${body}</div>
+      </div>
+    </div>`;
+  }
+
+  /** Render one inbox group. The folding rule (fr-2026-05-05-f) means
+   *  a single group may carry a calendar item AND one or more agent
+   *  proposals targeting that same event_id — applying any proposal
+   *  auto-rejects the others server-side, so we render the calendar
+   *  row + its associated proposals as a stacked block. */
+  _renderReviewGroup(g, pending, allDisabled) {
+    const ci = g.calendar_item || null;
+    const proposals = g.proposals || [];
+    const calIsPending = ci && pending.has(ci.event_id || "");
+    const dis = allDisabled ? " disabled" : "";
+    let calHtml = "";
+    if (ci) {
+      const statusLabel = ({new:"NEW", changed:"CHANGED", orphan:"ORPHAN", conflict:"CONFLICT"})[ci.status] || ci.status.toUpperCase();
+      const cDis = (allDisabled || calIsPending) ? " disabled" : "";
+      calHtml = `<div class="review-item review-item-calendar review-status-${_esc(ci.status)}">
+        <div class="review-item-tag">${_esc(statusLabel)}</div>
+        <div class="review-item-main">
+          <div class="review-item-line"><strong>${_esc(ci.what || "")}</strong></div>
+          <div class="review-item-meta">${_esc(ci.date || "")} ${_esc(ci.time || "")} · ${_esc(ci.who || "")}${ci.where ? " · " + _esc(ci.where) : ""}</div>
+        </div>
+        <div class="review-actions">
+          <button class="review-btn accept" data-review-action="acceptEvent" data-event-id="${_esc(ci.event_id || "")}"${cDis}>Accept</button>
+          <button class="review-btn hide" data-review-action="hideEvent" data-event-id="${_esc(ci.event_id || "")}"${cDis}>Hide</button>
+        </div>
+      </div>`;
+    }
+    const proposalHtml = proposals.map(p => {
+      const pDis = (allDisabled || pending.has(p.id)) ? " disabled" : "";
+      const summary = p.summary || (`${p.kind} ${JSON.stringify(p.args || {}).slice(0,80)}`);
+      return `<div class="review-item review-item-proposal">
+        <div class="review-item-tag review-tag-agent">AGENT</div>
+        <div class="review-item-main">
+          <div class="review-item-line">${_esc(summary)}</div>
+          ${p.added_at ? `<div class="review-item-meta">queued ${_esc(p.added_at.slice(0,16).replace("T", " "))}</div>` : ""}
+        </div>
+        <div class="review-actions">
+          <button class="review-btn accept" data-review-action="applyProposal" data-pe-id="${_esc(p.id)}"${pDis}>Apply</button>
+          <button class="review-btn reject" data-review-action="rejectProposal" data-pe-id="${_esc(p.id)}"${pDis}>Reject</button>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="review-group">${calHtml}${proposalHtml}</div>`;
+  }
+
   // ====================== DETAIL MODAL ======================
 
   _renderDetailModal(ev) {
@@ -1287,6 +1632,38 @@ class KatjaScheduleCard extends HTMLElement {
     let skipSection = "";
     if (isAccepted) {
       skipSection = `<button class="skip-week-btn" ${this._actionLoading?"disabled":""}>⚠️ Skip this week</button>`;
+    }
+
+    // fr-2026-05-11-b: inline Accept/Reject affordance when this event
+    // has a pending agent proposal or a pending calendar diff. Mirrors
+    // the per-row buttons on the web /review page so the user can act
+    // straight from the event-sheet without opening the full review
+    // modal. Three shapes:
+    //   - calendar NEW    → Accept / Hide (via /events/accept|hide)
+    //   - calendar CHANGED → Accept / Hide (same endpoints)
+    //   - agent proposal  → Apply / Reject (via /review/proposed/*)
+    let inlineReviewSection = "";
+    const pp = ev._pendingProposal;
+    const peId = pp?.id || "";
+    const evId = ev._eventId || (ev.id || "");
+    const inFlight = (this._reviewActionPending?.has(peId)
+                       || (evId && this._reviewActionPending?.has(evId)));
+    const idis = inFlight ? " disabled" : "";
+    if (pp && pp.kind && pp.kind !== "add" && peId) {
+      // Standalone agent proposal attached to an existing event (update,
+      // hide, accept, merge). Apply / Reject route to the agent helper.
+      inlineReviewSection = `<div class="inline-review-bar">
+        <span class="inline-review-label">Pending ${_esc(pp.kind)} from agent</span>
+        <button class="review-btn accept inline-apply" data-pe-id="${_esc(peId)}"${idis}>Apply</button>
+        <button class="review-btn reject inline-reject" data-pe-id="${_esc(peId)}"${idis}>Reject</button>
+      </div>`;
+    } else if (!pp && (status === "new" || status === "changed") && evId) {
+      // Calendar diff row — promote into overlay or hide it.
+      inlineReviewSection = `<div class="inline-review-bar">
+        <span class="inline-review-label">Calendar ${_esc(status.toUpperCase())}</span>
+        <button class="review-btn accept inline-accept-cal" data-event-id="${_esc(evId)}"${idis}>Accept</button>
+        <button class="review-btn hide inline-hide-cal" data-event-id="${_esc(evId)}"${idis}>Hide</button>
+      </div>`;
     }
 
     // Recheck section. Flight events get TWO affordances side-by-side
@@ -1414,6 +1791,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${_esc(location)}</span></div>` : ""}
             ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(description)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
+            ${inlineReviewSection}
             ${recheckSection}
             ${resultSection}
             ${actionSection}
@@ -1467,14 +1845,27 @@ class KatjaScheduleCard extends HTMLElement {
     const isToday = this._isToday(ds), isTomorrow = this._isTomorrow(ds);
     const d = new Date(ds+"T12:00:00"), isWeekend = d.getDay()===0||d.getDay()===6;
     let cls = "day"; if (isToday) cls+=" is-today"; if (isTomorrow) cls+=" is-tomorrow"; if (isWeekend) cls+=" weekend";
-    return `<div class="${cls}"><div class="day-header"><span class="day-dot"></span>${this._formatDateHeader(ds)}${events.length>0&&!isToday?`<span class="event-count">${events.length} event${events.length!==1?"s":""}</span>`:""}</div><div class="events">${events.length===0?'<div class="no-events">No events</div>':events.map(ev=>this._renderEvent(ev)).join("")}</div></div>`;
+    // fr-2026-05-11-a / -b: per-day 🗑 chip with the hidden-count
+    // label, shown only when this day actually has cancelled/skipped/
+    // rule-hidden rows. Days with nothing to reveal don't carry the
+    // chip (Ken's screenshot showed empty header — fr-2026-05-11-b
+    // adds the count so the affordance is visible AND useful).
+    const dayActive = this._dayShowsFlagged(ds);
+    const flaggedCount = this._flaggedCountForDay(events);
+    const dayBtn = flaggedCount > 0
+      ? `<button class="day-flagged-btn${dayActive?" active":""}" data-day-flagged="${_esc(ds)}" title="${dayActive?"Hide":"Show"} ${flaggedCount} cancelled/skipped on this day">🗑 ${flaggedCount}</button>`
+      : "";
+    return `<div class="${cls}"><div class="day-header"><span class="day-dot"></span>${this._formatDateHeader(ds)}${events.length>0&&!isToday?`<span class="event-count">${events.length} event${events.length!==1?"s":""}</span>`:""}${dayBtn}</div><div class="events">${events.length===0?'<div class="no-events">No events</div>':events.map(ev=>this._renderEvent(ev, ds)).join("")}</div></div>`;
   }
 
-  _renderEvent(ev) {
+  _renderEvent(ev, dayDs) {
     const summary = ev.summary||"", isDrive = this._isDrive(summary);
     const idx = (this._renderedEvents || this._events).indexOf(ev);
     const flagged = this._isFlagged(ev);
-    if (flagged && !this._showFlagged) return "";
+    // fr-2026-05-11-a: respect either the global flag OR the per-day
+    // override. `dayDs` is the iso of the day section this row belongs
+    // to (passed by _renderDay).
+    if (flagged && !this._showFlagged && !(dayDs && this._perDayFlagged.has(dayDs))) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
     if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${_esc(m[1])}</span>`; }
@@ -1633,6 +2024,16 @@ class KatjaScheduleCard extends HTMLElement {
         cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 11px; transition: all 0.15s; }
       .flagged-btn:hover { border-color: var(--accent); }
       .flagged-btn.active { background: rgba(255,100,100,0.15); color: #FF6B6B; border-color: #FF6B6B; }
+      /* fr-2026-05-11-a: per-day 🗑 button inside .day-header — smaller
+         + less prominent than the global one, but uses the same active
+         colors so the affordance is consistent. */
+      .day-flagged-btn { background: transparent; border: 1px solid transparent;
+        color: var(--muted); cursor: pointer; padding: 1px 5px;
+        border-radius: var(--radius-sm); font-size: 10px; margin-left: 6px;
+        opacity: 0.55; transition: all 0.15s; vertical-align: middle; }
+      .day-flagged-btn:hover { opacity: 1; border-color: var(--border); }
+      .day-flagged-btn.active { background: rgba(255,100,100,0.15);
+        color: #FF6B6B; border-color: #FF6B6B; opacity: 1; }
       .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: var(--overview-min); }
       .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--accent-bg); }
@@ -1709,6 +2110,79 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-row:last-child { border-bottom: none; }
       .modal-label { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; min-width: 60px; padding-top: 2px; }
       .modal-desc { font-size: 13px; color: var(--muted); line-height: 1.4; }
+
+      /* fr-2026-05-11-b: review modal — duplicates the web /review
+         page so the user can apply/reject pending proposals + accept/
+         hide calendar NEW/CHANGED rows from HA. Wider than the event-
+         detail modal because each item is a stacked row + actions. */
+      .review-modal { width: min(720px, 95vw); }
+      .review-body { padding: 12px 16px 18px; }
+      .review-loading, .review-empty, .review-error {
+        text-align: center; padding: 32px 16px; color: var(--muted); }
+      .review-error { color: #FF6B6B; }
+      .review-bulkbar { display: flex; flex-wrap: wrap; gap: 6px;
+        padding: 8px 0 12px; border-bottom: 1px solid var(--border);
+        margin-bottom: 12px; }
+      .review-btn-bulk { padding: 6px 10px; font-size: 12px;
+        font-weight: 600; border-radius: var(--radius-sm); border: 1px solid var(--border);
+        background: transparent; cursor: pointer; color: var(--text-soft); }
+      .review-btn-bulk.accept { border-color: #4CAF50; color: #4CAF50; }
+      .review-btn-bulk.reject, .review-btn-bulk.hide {
+        border-color: #FF6B6B; color: #FF6B6B; }
+      .review-btn-bulk:hover { filter: brightness(1.2); }
+      .review-btn-bulk:disabled { opacity: 0.4; cursor: not-allowed; }
+      .review-section { margin-bottom: 14px; }
+      .review-section-title { font-size: 12px; text-transform: uppercase;
+        letter-spacing: 0.05em; color: var(--muted); margin: 8px 0 6px;
+        font-weight: 600; }
+      .review-batch { display: flex; flex-wrap: wrap; gap: 10px;
+        align-items: center; padding: 10px 12px; margin-bottom: 6px;
+        border: 1px solid var(--border); border-radius: var(--radius-sm);
+        background: rgba(255,210,0,0.05); }
+      .review-batch-summary { flex: 1; font-size: 13px; line-height: 1.4; }
+      .review-batch-dates { font-size: 11px; color: var(--muted);
+        display: block; margin-top: 2px; }
+      .review-group { border: 1px solid var(--border);
+        border-radius: var(--radius-sm); margin-bottom: 8px; overflow: hidden; }
+      .review-item { display: flex; gap: 10px; align-items: flex-start;
+        padding: 10px 12px; }
+      .review-item + .review-item { border-top: 1px dashed var(--border); }
+      .review-item-calendar { background: rgba(80,160,255,0.04); }
+      .review-item-proposal { background: rgba(255,210,0,0.04); }
+      .review-status-new .review-item-tag { color: #4CAF50; }
+      .review-status-changed .review-item-tag { color: #FF9800; }
+      .review-status-orphan .review-item-tag { color: #FF6B6B; }
+      .review-status-conflict .review-item-tag { color: #FF3030; }
+      .review-tag-agent { color: #E0A020; }
+      .review-item-tag { font-size: 10px; font-weight: 700;
+        letter-spacing: 0.04em; min-width: 56px; padding-top: 3px; }
+      .review-item-main { flex: 1; font-size: 14px; line-height: 1.4; }
+      .review-item-line { color: var(--text-strong); }
+      .review-item-meta { font-size: 11px; color: var(--muted);
+        margin-top: 2px; }
+      .review-actions { display: flex; gap: 6px; }
+      .review-btn { padding: 5px 10px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border); background: transparent;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        color: var(--text-soft); }
+      .review-btn.accept { color: #4CAF50; border-color: #4CAF50; }
+      .review-btn.reject, .review-btn.hide {
+        color: #FF6B6B; border-color: #FF6B6B; }
+      .review-btn:hover { filter: brightness(1.2); }
+      .review-btn:disabled { opacity: 0.4; cursor: wait; }
+      /* The pending pill becomes a button on the header (tap → opens
+         the review modal). Keep the badge look. */
+      .pending-pill { background: #FFD200; color: #0A0A0A;
+        border: 2px solid #0A0A0A; border-radius: 0; padding: 4px 12px;
+        font-weight: 700; font-size: 13px; cursor: pointer;
+        font-family: var(--font); }
+      .pending-pill:hover { filter: brightness(1.05); }
+      /* Inline review bar on the event-detail modal (fr-2026-05-11-b). */
+      .inline-review-bar { display: flex; align-items: center; gap: 8px;
+        margin: 10px 0; padding: 8px 10px; border-radius: var(--radius-sm);
+        background: rgba(255,210,0,0.07); border: 1px solid rgba(255,210,0,0.3); }
+      .inline-review-label { flex: 1; font-size: 12px; color: var(--muted);
+        font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 
       /* Recheck */
       .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
