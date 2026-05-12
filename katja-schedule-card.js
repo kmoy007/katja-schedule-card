@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.39.4";
+const CARD_VERSION = "0.40.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -666,6 +666,27 @@ class KatjaScheduleCard extends HTMLElement {
   setConfig(config) {
     if (!config.calendars || !config.calendars.length) throw new Error("Define at least one calendar entity.");
     this._config = { title: "Family Schedule", ...config };
+    // Per-view font size adjustment (px delta from baseline; 0 = no
+    // change). Accepts either a single number applied to every view
+    // (`font_adjust: 4`) or an object keyed by view name
+    // (`font_adjust: {overview: -2, dayview: 4}`). The active-view
+    // delta is emitted as `--katja-font-adjust` and a handful of
+    // font-size rules use calc(baseline + var(--katja-font-adjust)).
+    const fa = config.font_adjust;
+    if (typeof fa === "number") {
+      this._fontAdjust = { all: fa };
+    } else if (fa && typeof fa === "object") {
+      this._fontAdjust = fa;
+    } else {
+      this._fontAdjust = {};
+    }
+    // Day View knobs. Both are deltas from the baseline:
+    //   - dayview_grid_height: px added to the canvas total height
+    //     (baseline = DV_HOUR_PX × hours). Negative compresses.
+    //   - dayview_grid_width_pct: percentage points added to the
+    //     right-column width (baseline = 24% of the row).
+    this._dayviewGridHeight = Number(config.dayview_grid_height) || 0;
+    this._dayviewGridWidthPct = Number(config.dayview_grid_width_pct) || 0;
     // Theme
     const themeName = (config.theme || "dark").toLowerCase();
     this._theme = THEMES[themeName] ? themeName : "dark";
@@ -2033,7 +2054,10 @@ class KatjaScheduleCard extends HTMLElement {
   _renderDayHourAxis(ds, events) {
     const isToday = this._isToday(ds);
     const totalHours = DV_DAY_END - DV_DAY_START + 1;
-    const canvasHeight = totalHours * DV_HOUR_PX;
+    // Baseline height + per-card delta (config: dayview_grid_height).
+    // Clamped to a minimum that still fits the hour labels readably.
+    const baseHeight = totalHours * DV_HOUR_PX;
+    const canvasHeight = Math.max(120, baseHeight + (this._dayviewGridHeight || 0));
 
     // Hour labels (left gutter).
     const hourLabels = [];
@@ -2256,8 +2280,25 @@ class KatjaScheduleCard extends HTMLElement {
 
   _getStyles() {
     const t = this._resolveTheme();
+    // Resolve the active view's font adjustment (px delta added to
+    // baseline font sizes). Per-view config key takes precedence over
+    // the `all` fallback over the default of 0.
+    const activeView = this._lockedView || this._view || "overview";
+    const fontAdjust = (
+      this._fontAdjust[activeView]
+        ?? this._fontAdjust.all
+        ?? 0
+    );
+    // Day View right column width = baseline 24% + delta (clamped to
+    // sane bounds so a typo'd value doesn't make the column vanish).
+    const dvWidthPct = Math.max(10, Math.min(80, 24 + this._dayviewGridWidthPct));
     return `
-      :host { display: block; font-family: var(--font); color: var(--text); ${this._themeVars(this._theme)}; }
+      :host {
+        display: block; font-family: var(--font); color: var(--text);
+        ${this._themeVars(this._theme)};
+        --katja-font-adjust: ${fontAdjust}px;
+        --katja-dv-grid-width: ${dvWidthPct}%;
+      }
       .card { background: var(--card-bg); border-radius: var(--radius); overflow: hidden; position: relative; box-shadow: var(--card-shadow); }
       .card-locked { border-radius: var(--radius-sm); }
       /* Seam mode — when adjacent cards abut, flatten the touching corners
@@ -2308,10 +2349,14 @@ class KatjaScheduleCard extends HTMLElement {
          (HA dashboards on phones) since the wall-display is the
          primary surface for Day View. */
       .dayview-stack { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
-      /* Right column = 60% of its previous share: was 3fr/2fr
-         (60%/40%); now the grid column shrinks to 0.6×40% = 24% of
-         the row, leaving 76% for the list. 19fr/6fr ≈ 76%/24%. */
-      .dayview-row { display: grid; grid-template-columns: 19fr 6fr; gap: 0;
+      /* Right column width comes from `--katja-dv-grid-width`
+         (baseline 24%, adjustable via dayview_grid_width_pct config).
+         List column takes the remainder. */
+      .dayview-row { display: grid;
+                      grid-template-columns:
+                        calc(100% - var(--katja-dv-grid-width, 24%))
+                        var(--katja-dv-grid-width, 24%);
+                      gap: 0;
                       border: 1px solid var(--border); border-radius: var(--radius);
                       overflow: hidden; }
       .dayview-col-list { border-right: 1px solid var(--border); }
@@ -2353,8 +2398,8 @@ class KatjaScheduleCard extends HTMLElement {
                   font-size: 11.5px; line-height: 1.25; }
       .dv-event:hover { filter: brightness(1.05); }
       .dv-event.is-compact { padding: 1px 6px; }
-      .dv-event.is-compact .dv-ev-time { font-size: 9.5px; }
-      .dv-event.is-compact .dv-ev-what { font-size: 10.5px;
+      .dv-event.is-compact .dv-ev-time { font-size: calc(9.5px + var(--katja-font-adjust, 0px)); }
+      .dv-event.is-compact .dv-ev-what { font-size: calc(10.5px + var(--katja-font-adjust, 0px));
                                           white-space: nowrap;
                                           text-overflow: ellipsis; overflow: hidden; }
       .dv-event.is-compact .dv-ev-where { display: none; }
@@ -2363,14 +2408,14 @@ class KatjaScheduleCard extends HTMLElement {
       .dv-event.is-pending {
         border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
       }
-      .dv-ev-time { font-size: 10px; color: var(--muted);
+      .dv-ev-time { font-size: calc(10px + var(--katja-font-adjust, 0px)); color: var(--muted);
                     font-variant-numeric: tabular-nums; font-weight: 600;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .dv-ev-what { font-size: 12px; font-weight: 600;
+      .dv-ev-what { font-size: calc(12px + var(--katja-font-adjust, 0px)); font-weight: 600;
                     overflow: hidden; text-overflow: ellipsis;
                     display: -webkit-box; -webkit-line-clamp: 2;
                     -webkit-box-orient: vertical; }
-      .dv-ev-where { font-size: 10.5px; color: var(--muted);
+      .dv-ev-where { font-size: calc(10.5px + var(--katja-font-adjust, 0px)); color: var(--muted);
                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       /* NOW line — red rule + dot. JS positions on render; the minute
          ticker re-renders the card so the line creeps. */
@@ -2383,7 +2428,7 @@ class KatjaScheduleCard extends HTMLElement {
                         background: #D03030; border-radius: 50%; }
       .days { padding: 8px 0; }
       .day { padding: var(--day-pad); margin-bottom: var(--day-spacing); }
-      .day-header { display: flex; align-items: center; gap: 10px; padding: var(--day-header-pad); font-family: var(--font-display); font-weight: var(--day-header-weight); font-size: var(--day-header-size); text-transform: var(--day-header-transform); letter-spacing: var(--day-header-letter-spacing); color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
+      .day-header { display: flex; align-items: center; gap: 10px; padding: var(--day-header-pad); font-family: var(--font-display); font-weight: var(--day-header-weight); font-size: calc(var(--day-header-size) + var(--katja-font-adjust, 0px)); text-transform: var(--day-header-transform); letter-spacing: var(--day-header-letter-spacing); color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card-bg); z-index: 2; }
       .day.is-today .day-header { color: var(--header-text); font-size: var(--today-header-size); }
       .day.is-tomorrow .day-header { color: var(--text-soft); font-size: calc(var(--day-header-size) + 3px); }
       .day.is-today { background: var(--today-bg); border-radius: var(--radius-sm); padding-top: 8px; padding-bottom: 12px; margin-bottom: 8px; }
@@ -2395,10 +2440,10 @@ class KatjaScheduleCard extends HTMLElement {
       .event { display: grid; grid-template-columns: var(--event-cols); gap: var(--event-gap); padding: var(--event-pad-v) var(--event-pad-h); border-bottom: 1px solid var(--border); align-items: start; cursor: pointer; border-radius: var(--radius-sm); }
       .event:hover { background: var(--event-hover); }
       .event:last-child { border-bottom: none; }
-      .event-time { font-family: var(--font); font-size: var(--event-time-size); font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+      .event-time { font-family: var(--font); font-size: calc(var(--event-time-size) + var(--katja-font-adjust, 0px)); font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
       .day.is-today .event-time { font-size: calc(var(--event-time-size) + 3px); color: var(--text-soft); }
       .event-body { min-width: 0; }
-      .event-summary { font-family: var(--font); font-size: var(--event-summary-size); font-weight: var(--event-summary-weight); color: var(--text-strong); display: flex; align-items: center; gap: 8px; line-height: 1.3; flex-wrap: wrap; }
+      .event-summary { font-family: var(--font); font-size: calc(var(--event-summary-size) + var(--katja-font-adjust, 0px)); font-weight: var(--event-summary-weight); color: var(--text-strong); display: flex; align-items: center; gap: 8px; line-height: 1.3; flex-wrap: wrap; }
       .day.is-today .event-summary { font-size: calc(var(--event-summary-size) + 3px); color: var(--header-text); }
       .event-summary .person-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
       .event-location { font-size: 14px; color: var(--muted); margin-top: 2px; }
@@ -2440,7 +2485,7 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-events { display: flex; flex-direction: column; gap: 1px; }
       .cal-event { padding: 2px 4px; border-radius: var(--radius-xs); background: var(--event-hover); font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-      .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-size: 11px; }
+      .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-size: calc(11px + var(--katja-font-adjust, 0px)); }
       .cal-drive { opacity: 0.5; font-style: italic; }
       /* fr-2026-05-07-d: pending-proposal styling on the cal grid.
          Border-left already encodes the per-person color, so the
@@ -2737,6 +2782,30 @@ class KatjaScheduleCardEditor extends HTMLElement {
         <label style="display:inline;margin:0">Show theme toggle button</label>
       </div>
 
+      <h3>Tuning</h3>
+      <p style="font-size:11px;color:#888;margin:0 0 10px">
+        Each value is a delta from the baseline (0 = current).
+        Per-view font tuning: set in YAML as
+        <code>font_adjust: {overview: -2, dayview: 4}</code>;
+        the simple field below applies one number to every view.
+      </p>
+      <div class="row">
+        <label>Font size adjustment (px, applies to active view)</label>
+        <input type="number" id="num-font-adjust" step="1" min="-10" max="20"
+               value="${typeof c.font_adjust === 'number' ? c.font_adjust : ''}"
+               placeholder="0">
+      </div>
+      <div class="row">
+        <label>Day View grid height delta (px, +/- from baseline ${(DV_DAY_END - DV_DAY_START + 1) * DV_HOUR_PX}px)</label>
+        <input type="number" id="num-dv-grid-height" step="8" min="-400" max="400"
+               value="${c.dayview_grid_height ?? ''}" placeholder="0">
+      </div>
+      <div class="row">
+        <label>Day View grid width delta (%, +/- from baseline 24%)</label>
+        <input type="number" id="num-dv-grid-width" step="1" min="-14" max="56"
+               value="${c.dayview_grid_width_pct ?? ''}" placeholder="0">
+      </div>
+
       <h3>Per-panel themes (Overview view)</h3>
       <p style="font-size:11px;color:#888;margin:0 0 10px">
         In Overview, today / tomorrow / calendar each get their own region.
@@ -2819,6 +2888,15 @@ class KatjaScheduleCardEditor extends HTMLElement {
     this.shadowRoot.querySelector("#sel-theme").addEventListener("change", e => this._update("theme", e.target.value));
     this.shadowRoot.querySelector("#sel-view").addEventListener("change", e => this._update("view", e.target.value));
     this.shadowRoot.querySelector("#chk-theme-toggle").addEventListener("change", e => this._update("show_theme_toggle", e.target.checked));
+    // Number-input wiring: store the parsed integer or remove the key
+    // when blanked. Keeps the YAML clean of zero-valued knobs.
+    const _numChange = (key) => (e) => {
+      const v = e.target.value;
+      this._update(key, v === "" ? undefined : parseInt(v, 10) || 0);
+    };
+    this.shadowRoot.querySelector("#num-font-adjust").addEventListener("change", _numChange("font_adjust"));
+    this.shadowRoot.querySelector("#num-dv-grid-height").addEventListener("change", _numChange("dayview_grid_height"));
+    this.shadowRoot.querySelector("#num-dv-grid-width").addEventListener("change", _numChange("dayview_grid_width_pct"));
     this.shadowRoot.querySelectorAll("[data-panel-theme]").forEach(sel => {
       sel.addEventListener("change", e => {
         this._updateNested("panel_themes", e.target.dataset.panelTheme, e.target.value);
