@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.39.3";
+const CARD_VERSION = "0.39.4";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1437,7 +1437,19 @@ class KatjaScheduleCard extends HTMLElement {
                 : this._dayDetailDate ? this._renderDayDetailModal(this._dayDetailDate, grouped)
                 : "";
 
-    const showHeader = !locked || locked === "overview" || locked === "schedule";
+    // Show the header (title + pending pill + sync text + view toggle)
+    // on every view that's likely the user's primary surface. Locked
+    // single-day views (today / tomorrow / calendar) skip the header
+    // to maximize content space — but Day View IS a primary surface
+    // and the pending-pill on that header is the only way to see the
+    // review queue, so it gets the header back.
+    const showHeader = (
+      !locked
+      || locked === "overview"
+      || locked === "schedule"
+      || locked === "dayview"
+      || locked === "dayview-today"
+    );
     // fr-2026-05-11-b (follow-up): hide the view-switcher pill on the
     // Overview view — Ken's wall display already treats Overview as
     // the home surface, so the pill at the top duplicates other
