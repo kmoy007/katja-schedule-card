@@ -2349,9 +2349,9 @@ class KatjaScheduleCard extends HTMLElement {
          (HA dashboards on phones) since the wall-display is the
          primary surface for Day View. */
       .dayview-stack { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
-      /* Right column width comes from `--katja-dv-grid-width`
-         (baseline 24%, adjustable via dayview_grid_width_pct config).
-         List column takes the remainder. */
+      /* Right column width comes from the --katja-dv-grid-width CSS
+         variable (baseline 24%, adjustable via dayview_grid_width_pct
+         config). List column takes the remainder. */
       .dayview-row { display: grid;
                       grid-template-columns:
                         calc(100% - var(--katja-dv-grid-width, 24%))
