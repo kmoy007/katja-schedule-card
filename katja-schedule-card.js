@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.40.0";
+const CARD_VERSION = "0.41.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1983,20 +1983,28 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== DAY DETAIL MODAL ======================
 
+  // Tap on a day in the calendar grid → full Day-View-style modal for
+  // that day. Mirrors the dayview-row layout (schedule list left,
+  // hour-axis right) so the modal feels like the same UI as the
+  // primary Day View, just scoped to one specific day. On narrow
+  // widths the hour-axis hides via the existing dayview-row media
+  // query, collapsing to the list only.
   _renderDayDetailModal(ds, grouped) {
     const events = grouped[ds] || [];
     const dateLabel = this._formatDateHeader(ds);
     return `
       <div class="modal-backdrop">
-        <div class="modal">
+        <div class="modal modal-wide">
           <div class="modal-header">
             <span class="modal-dot" style="background:#4ECDC4"></span>
             <span class="modal-title">${_esc(dateLabel)}</span>
             <button class="modal-close">✕</button>
           </div>
-          <div class="modal-body" style="padding: 8px 16px;">
-            ${events.length === 0 ? '<div class="no-events">No events</div>' :
-              events.map(ev => this._renderEvent(ev)).join("")}
+          <div class="modal-body modal-body-dayview">
+            <div class="dayview-row">
+              <div class="dayview-col-list">${this._renderDay(ds, events)}</div>
+              <div class="dayview-col-grid">${this._renderDayHourAxis(ds, events)}</div>
+            </div>
           </div>
         </div>
       </div>`;
@@ -2498,6 +2506,15 @@ class KatjaScheduleCard extends HTMLElement {
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
       .modal { background: var(--modal-bg); color: var(--modal-text); border-radius: var(--radius); width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: var(--modal-shadow); font-family: var(--font); }
+      /* Wider variant for the calendar-tap day-detail modal, which
+         houses a full dayview-row (list + hour-axis) and needs more
+         horizontal room than the standard event-detail modal. */
+      .modal.modal-wide { width: min(960px, 95vw); }
+      .modal-body-dayview { padding: 8px 12px; }
+      /* In-modal dayview-row tweaks: drop the outer border/radius so
+         the row sits flush inside the modal body, since the modal
+         already provides chrome. */
+      .modal-body-dayview .dayview-row { border: none; border-radius: 0; }
       .modal-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .modal-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
