@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.41.1";
+const CARD_VERSION = "0.42.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2093,25 +2093,57 @@ class KatjaScheduleCard extends HTMLElement {
         if (endMin <= startMin) return "";
         const top = (startMin - DV_DAY_START * 60) / 60 * DV_HOUR_PX;
         const naturalPx = (endMin - startMin) / 60 * DV_HOUR_PX - 2;
-        // Floor at 12px (tap-target minimum). Anything <26 min at
-        // 32 px/hr hits the floor and renders identically — the
-        // sub-half-hour bucket is the right granularity to collapse.
-        const height = Math.max(12, naturalPx);
-        const isCompact = naturalPx < 32;
+        // Tiered display (Google Calendar pattern): the natural pixel
+        // height of the block drives which fields render, so short
+        // events stay readable instead of hiding their title.
+        //   ≥ 32px (≥1hr at 32px/hr)  → "full"   — time + title + where
+        //   20–31px (~38–58min)        → "tight"  — title + time inline
+        //   12–19px (~22–36min)        — "tiny"   — title only, no time
+        //   < 12px (~<22min)           → "stub"   — colored bar, no text
+        // The time is dropped at "tiny" because the block's vertical
+        // position on the hour axis already encodes when it is —
+        // showing "11:00-11:30 AM" inside a 16px block crowded out the
+        // title, which is the only field a user actually scans for.
+        // Stubs floor at 6px (still tappable thanks to the 3px border
+        // expanding the hit target with the outer click handler).
+        let tier;
+        if      (naturalPx >= 32) tier = "full";
+        else if (naturalPx >= 20) tier = "tight";
+        else if (naturalPx >= 12) tier = "tiny";
+        else                       tier = "stub";
+        const height = tier === "stub" ? Math.max(6, naturalPx)
+                                        : Math.max(12, naturalPx);
         const color = _esc(ev._color || "#888");
         const flagged = this._isFlagged(ev);
         const isDrive = this._isDrive(ev.summary || "");
         const pending = ev._pendingProposal?.kind || "";
-        const cls = `dv-event${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
+        // Keep `is-compact` for backwards-compat with any external CSS;
+        // it's now an umbrella for non-full tiers. Add a tier-specific
+        // class (`is-tight` / `is-tiny` / `is-stub`) for finer styling.
+        const isCompact = tier !== "full";
+        const cls = `dv-event is-${tier}${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
         const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
         const timeStr = this._formatTime(ev);
         const summary = _esc(ev.summary || "");
         const where = ev.location ? `<div class="dv-ev-where">${_esc(ev.location)}</div>` : "";
-        return `<div class="${cls}" data-event-idx="${evIdx}" style="top:${top}px; height:${height}px; border-left: 3px solid ${color};">
-          <div class="dv-ev-time">${timeStr}</div>
-          <div class="dv-ev-what">${summary}</div>
-          ${isCompact ? "" : where}
-        </div>`;
+        // Build the inner markup per-tier rather than relying on CSS
+        // display:none for hidden fields — keeps the DOM minimal at
+        // stub size and prevents accidental reflow when text gets
+        // visually hidden but still measured.
+        let inner;
+        if (tier === "stub") {
+          // Title is preserved as a `title` attr so hover/long-press
+          // tooltips still reveal it; no visible text.
+          inner = "";
+        } else if (tier === "tiny") {
+          inner = `<div class="dv-ev-what">${summary}</div>`;
+        } else if (tier === "tight") {
+          inner = `<div class="dv-ev-row"><span class="dv-ev-what">${summary}</span><span class="dv-ev-time">${timeStr}</span></div>`;
+        } else {
+          inner = `<div class="dv-ev-time">${timeStr}</div><div class="dv-ev-what">${summary}</div>${where}`;
+        }
+        const titleAttr = ` title="${_esc(ev.summary || "")}${timeStr ? " · " + _esc(timeStr) : ""}"`;
+        return `<div class="${cls}" data-event-idx="${evIdx}"${titleAttr} style="top:${top}px; height:${height}px; border-left: 3px solid ${color};">${inner}</div>`;
       }).join("");
 
     // NOW line — only on today's column.
@@ -2404,12 +2436,32 @@ class KatjaScheduleCard extends HTMLElement {
                   background: var(--event-hover); color: var(--text-strong);
                   font-size: 11.5px; line-height: 1.25; }
       .dv-event:hover { filter: brightness(1.05); }
-      .dv-event.is-compact { padding: 1px 6px; }
-      .dv-event.is-compact .dv-ev-time { font-size: calc(9.5px + var(--katja-font-adjust, 0px)); }
-      .dv-event.is-compact .dv-ev-what { font-size: calc(10.5px + var(--katja-font-adjust, 0px));
-                                          white-space: nowrap;
-                                          text-overflow: ellipsis; overflow: hidden; }
-      .dv-event.is-compact .dv-ev-where { display: none; }
+      /* "Tight" tier — title + time on one line, title takes flex,
+         time is right-aligned. ~38-58 min events land here. */
+      .dv-event.is-tight { padding: 1px 6px; }
+      .dv-event.is-tight .dv-ev-row { display: flex; align-items: baseline;
+                                      gap: 6px; line-height: 1.1; }
+      .dv-event.is-tight .dv-ev-what { font-size: calc(11px + var(--katja-font-adjust, 0px));
+                                       font-weight: 600;
+                                       white-space: nowrap; overflow: hidden;
+                                       text-overflow: ellipsis;
+                                       flex: 1 1 auto; min-width: 0; }
+      .dv-event.is-tight .dv-ev-time { font-size: calc(9.5px + var(--katja-font-adjust, 0px));
+                                       color: var(--muted); font-weight: 500;
+                                       flex: 0 0 auto; white-space: nowrap; }
+      /* "Tiny" tier — title only, time dropped (the y-axis position
+         already encodes when the event is). ~22-36 min. */
+      .dv-event.is-tiny { padding: 0 6px; display: flex; align-items: center; }
+      .dv-event.is-tiny .dv-ev-what { font-size: calc(10.5px + var(--katja-font-adjust, 0px));
+                                      font-weight: 600;
+                                      white-space: nowrap; overflow: hidden;
+                                      text-overflow: ellipsis;
+                                      line-height: 1.1; width: 100%; }
+      /* "Stub" tier — no text at all, just a colored block. ~<22 min
+         events would crowd any glyph. The title attribute on the
+         parent supplies hover text; the existing tap handler still
+         opens the detail modal. */
+      .dv-event.is-stub { padding: 0; background: var(--event-hover); }
       .dv-event.is-flagged { opacity: 0.4; text-decoration: line-through; }
       .dv-event.is-drive { font-style: italic; opacity: 0.85; }
       .dv-event.is-pending {
