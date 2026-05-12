@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.41.0";
+const CARD_VERSION = "0.41.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1991,15 +1991,14 @@ class KatjaScheduleCard extends HTMLElement {
   // query, collapsing to the list only.
   _renderDayDetailModal(ds, grouped) {
     const events = grouped[ds] || [];
-    const dateLabel = this._formatDateHeader(ds);
+    // No modal-header — _renderDay already emits a day-header with the
+    // date, event count, and the 🗑 chip. Stacking the modal-title on
+    // top would duplicate the date and waste vertical space. The close
+    // button floats inside the body instead.
     return `
-      <div class="modal-backdrop">
-        <div class="modal modal-wide">
-          <div class="modal-header">
-            <span class="modal-dot" style="background:#4ECDC4"></span>
-            <span class="modal-title">${_esc(dateLabel)}</span>
-            <button class="modal-close">✕</button>
-          </div>
+      <div class="modal-backdrop modal-backdrop-strong">
+        <div class="modal modal-wide modal-dayview">
+          <button class="modal-close modal-close-float" aria-label="Close">✕</button>
           <div class="modal-body modal-body-dayview">
             <div class="dayview-row">
               <div class="dayview-col-list">${this._renderDay(ds, events)}</div>
@@ -2510,11 +2509,57 @@ class KatjaScheduleCard extends HTMLElement {
          houses a full dayview-row (list + hour-axis) and needs more
          horizontal room than the standard event-detail modal. */
       .modal.modal-wide { width: min(960px, 95vw); }
-      .modal-body-dayview { padding: 8px 12px; }
+      /* Strong backdrop variant — the dayview modal is large enough
+         that the standard 0.6 black tint leaves underlying content
+         readable. 0.85 + blur fully obscures the page behind, so the
+         modal reads as a focused surface. */
+      .modal-backdrop-strong { background: rgba(0,0,0,0.85);
+        backdrop-filter: blur(10px) saturate(0.6);
+        -webkit-backdrop-filter: blur(10px) saturate(0.6); }
+      /* The dayview modal can't rely on the theme's --modal-bg alone:
+         on HA themes where --ha-card-background is translucent, the
+         modal becomes see-through and you can read the schedule
+         underneath. Layer an opaque dark base behind the theme color
+         so the modal is solid regardless of theme translucency. */
+      .modal.modal-dayview { background: var(--modal-bg, #1a1a1a);
+        background-color: #1a1a1a;
+        position: relative; }
+      .modal-body-dayview { padding: 8px 12px;
+        /* Reset the user's per-view font-adjust inside the modal —
+           the wall-display tuning makes _renderDay rows feel huge in
+           a centered 960px modal. Modal uses baseline sizes. */
+        --katja-font-adjust: 0px; }
       /* In-modal dayview-row tweaks: drop the outer border/radius so
-         the row sits flush inside the modal body, since the modal
-         already provides chrome. */
-      .modal-body-dayview .dayview-row { border: none; border-radius: 0; }
+         the row sits flush inside the modal body. Force opaque
+         backgrounds on both columns so no translucent --card-bg can
+         bleed underlying content through. */
+      .modal-body-dayview .dayview-row { border: none; border-radius: 0; background: transparent; }
+      .modal-body-dayview .dayview-col-list,
+      .modal-body-dayview .dayview-col-grid { background: transparent; }
+      /* The list's day-header is sticky+--card-bg in the main view to
+         stay visible while scrolling a long day. Inside a modal we
+         don't want it sticky (the modal scrolls as a whole) and the
+         theme --card-bg may be translucent. Static + transparent. */
+      .modal-body-dayview .day-header { position: static; background: transparent; }
+      /* Scale down the inherited list typography for modal context.
+         _renderDay's defaults are tuned for full-card width; in a
+         centered modal they look oversized. */
+      .modal-body-dayview .day-header { font-size: 16px; }
+      .modal-body-dayview .day.is-today .day-header { font-size: 17px; }
+      .modal-body-dayview .day.is-tomorrow .day-header { font-size: 16px; }
+      .modal-body-dayview .event-summary { font-size: 14px; }
+      .modal-body-dayview .day.is-today .event-summary { font-size: 14px; }
+      .modal-body-dayview .event-time { font-size: 13px; }
+      .modal-body-dayview .day.is-today .event-time { font-size: 13px; }
+      .modal-body-dayview .event-location { font-size: 12px; }
+      /* Floating close button — replaces the modal-header bar (the
+         day-header inside _renderDay already serves as the title row,
+         so a full header would duplicate the date). */
+      .modal-close-float { position: absolute; top: 8px; right: 10px;
+        z-index: 3; background: transparent; border: none;
+        color: var(--muted); font-size: 20px; cursor: pointer;
+        padding: 4px 8px; border-radius: var(--radius-sm); }
+      .modal-close-float:hover { background: var(--event-hover); color: var(--text-strong); }
       .modal-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .modal-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
