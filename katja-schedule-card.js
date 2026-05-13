@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.42.0";
+const CARD_VERSION = "0.43.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -656,6 +656,20 @@ class KatjaScheduleCard extends HTMLElement {
     this._reviewLoading = false;
     this._reviewActionPending = new Set();
     this._reviewActionError = null;
+    // Starred view (6-month long-range, household-starred only). Data
+    // comes from the katja_schedule/list_starred_events WS command on
+    // first switch; refreshed on every _fetchEvents tick so star
+    // changes from the web propagate within ~5 min. Three sub-layouts
+    // (A vertical agenda, B mini-grid + agenda, C timeline ribbon)
+    // selected by a sub-toggle inside the view header; default A.
+    this._starredEvents = [];
+    this._starredFetched = false;
+    this._starredLoading = false;
+    this._starredError = null;
+    this._starredSubLayout = (() => {
+      try { return localStorage.getItem("katja_starred_layout_v1") || "a"; }
+      catch (_) { return "a"; }
+    })();
   }
 
   set hass(hass) {
@@ -808,6 +822,9 @@ class KatjaScheduleCard extends HTMLElement {
     // badges land in the same render pass. Best-effort: a failure
     // here just means no badges this cycle, never blocks the fetch.
     this._fetchPendingProposals();
+    // Refresh starred events alongside if the Starred view has ever
+    // been loaded — keeps the wall display current with web-side stars.
+    if (this._starredFetched) this._fetchStarredEvents();
     this._render();
   }
 
@@ -1449,6 +1466,11 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderDayView(grouped);
     } else if (this._view === "schedule") {
       body = this._renderSchedule(grouped);
+    } else if (this._view === "starred") {
+      body = this._renderStarredView();
+      if (!this._starredFetched && !this._starredLoading) {
+        this._fetchStarredEvents();
+      }
     } else {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
     }
@@ -1512,7 +1534,7 @@ class KatjaScheduleCard extends HTMLElement {
         ${showHeader ? `<div class="header">
           <span class="title">${_esc(this._config.title || "Family Schedule")}</span>
           ${showToggle ? `<div class="view-toggle">
-            ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"]].map(([v,label]) =>
+            ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"],["starred","★ Starred"]].map(([v,label]) =>
               `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${label}</button>`
             ).join("")}
           </div>` : ""}
@@ -1533,6 +1555,10 @@ class KatjaScheduleCard extends HTMLElement {
 
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
+    this.shadowRoot.querySelectorAll(".s-pick-btn").forEach(btn => btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._switchStarredSubLayout(btn.getAttribute("data-starred-sub") || "a");
+    }));
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
     // fr-2026-05-11-a: per-day 🗑 buttons. Each carries data-day-flagged
@@ -2170,6 +2196,215 @@ class KatjaScheduleCard extends HTMLElement {
     return `<div class="days">${this._getDaysFromToday(14).map(ds => this._renderDay(ds, grouped[ds]||[])).join("")}</div>`;
   }
 
+  // ============================================================
+  // Starred view — 6-month long-range, household-starred only.
+  // Data fetched via katja_schedule/list_starred_events WS command;
+  // three sub-layouts selected by an in-view sub-toggle.
+  // ============================================================
+  async _fetchStarredEvents() {
+    if (!this._hass || this._starredLoading) return;
+    this._starredLoading = true;
+    this._starredError = null;
+    try {
+      const result = await this._hass.connection.sendMessagePromise({
+        type: "katja_schedule/list_starred_events",
+      });
+      this._starredEvents = (result && result.events) || [];
+      this._starredFetched = true;
+    } catch (e) {
+      this._starredError = String((e && e.message) || e || "fetch failed");
+    } finally {
+      this._starredLoading = false;
+      this._render();
+    }
+  }
+
+  _switchStarredSubLayout(sub) {
+    if (!["a", "b", "c"].includes(sub)) return;
+    this._starredSubLayout = sub;
+    try { localStorage.setItem("katja_starred_layout_v1", sub); } catch (_) {}
+    this._render();
+  }
+
+  _renderStarredView() {
+    const evs = this._starredEvents || [];
+    const sub = this._starredSubLayout || "a";
+    const header = `
+      <div class="starred-head">
+        <div class="starred-head-title"><span class="s-star">★</span> Starred · next 6 months
+          ${this._starredFetched ? `<span class="starred-count">· ${evs.length} event${evs.length===1?"":"s"}</span>` : ""}
+        </div>
+        <div class="starred-pick">
+          ${[["a","A Agenda"],["b","B Grid"],["c","C Timeline"]].map(([k,l]) =>
+            `<button class="s-pick-btn${sub===k?" active":""}" data-starred-sub="${k}">${l}</button>`
+          ).join("")}
+        </div>
+      </div>`;
+    let pane = "";
+    if (this._starredLoading && !this._starredFetched) {
+      pane = `<div class="starred-loading">Loading starred events…</div>`;
+    } else if (this._starredError) {
+      pane = `<div class="starred-err">Failed to load: ${_esc(this._starredError)}</div>`;
+    } else if (!evs.length) {
+      pane = `<div class="starred-empty">
+        <div class="s-empty-star">☆</div>
+        <div class="s-empty-title">No starred events in the next 6 months</div>
+        <div class="s-empty-hint">Star events from the web app to populate this view.</div>
+      </div>`;
+    } else if (sub === "a") {
+      pane = this._renderStarredAgenda(evs);
+    } else if (sub === "b") {
+      pane = this._renderStarredGridSplit(evs);
+    } else {
+      pane = this._renderStarredTimeline(evs);
+    }
+    return `<div class="starred-wrap">${header}<div class="starred-pane">${pane}</div></div>`;
+  }
+
+  _renderStarredAgenda(evs) {
+    const today = this._todayStr();
+    const t = this._isoParts(today);
+    const monthsToShow = [];
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(t.y, t.m - 1 + i, 1);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+      monthsToShow.push(key);
+    }
+    const byMonth = {};
+    for (const ev of evs) {
+      const k = (ev.date || "").slice(0, 7);
+      (byMonth[k] = byMonth[k] || []).push(ev);
+    }
+    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return monthsToShow.map(key => {
+      const [y, m] = key.split("-");
+      const label = `${MN[parseInt(m, 10) - 1]} ${y}`;
+      const rows = byMonth[key] || [];
+      if (!rows.length) {
+        return `<section class="s-month s-month-empty">
+          <h3>${label}</h3>
+          <div class="s-empty-line">· nothing starred ·</div>
+        </section>`;
+      }
+      const items = rows.map(ev => {
+        const p = this._isoParts(ev.date);
+        const dt = new Date(p.y, p.m - 1, p.d);
+        const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
+        const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
+          ? _esc(ev.time) : "all day";
+        return `<div class="s-item">
+          <div class="s-item-date">${dow} ${p.d}</div>
+          <div class="s-item-body">
+            <div class="s-item-what">${_esc(ev.what || "")}</div>
+            ${ev.where ? `<div class="s-item-where">${_esc(ev.where)}</div>` : ""}
+          </div>
+          <div class="s-item-time">${timeLabel}</div>
+        </div>`;
+      }).join("");
+      return `<section class="s-month">
+        <h3>${label}</h3>
+        ${items}
+      </section>`;
+    }).join("");
+  }
+
+  _renderStarredGridSplit(evs) {
+    const today = this._todayStr();
+    const t = this._isoParts(today);
+    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const starredDays = new Set(evs.map(e => e.date));
+    const grids = [];
+    for (let i = 0; i < 6; i++) {
+      const dt = new Date(t.y, t.m - 1 + i, 1);
+      const y = dt.getFullYear(), m = dt.getMonth() + 1;
+      const first = new Date(y, m - 1, 1);
+      const daysInMonth = new Date(y, m, 0).getDate();
+      const firstWd = (first.getDay() + 6) % 7;
+      const cells = [];
+      for (let j = 0; j < firstWd; j++) cells.push(`<span class="g-cell empty"></span>`);
+      for (let d = 1; d <= daysInMonth; d++) {
+        const iso = `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+        const has = starredDays.has(iso);
+        const isToday = iso === today;
+        cells.push(`<span class="g-cell${has?" starred":""}${isToday?" today":""}" title="${iso}${has?" — starred":""}">${has?"★":d}</span>`);
+      }
+      grids.push(`<div class="s-mini-month">
+        <h4>${MN[m-1]}</h4>
+        <div class="g-dow"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+        <div class="g-grid">${cells.join("")}</div>
+      </div>`);
+    }
+    const upNext = evs.slice(0, 12).map(ev => {
+      const p = this._isoParts(ev.date);
+      const dt = new Date(p.y, p.m - 1, p.d);
+      const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
+      const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
+        ? _esc(ev.time) : "all day";
+      return `<div class="s-up-row">
+        <div class="s-up-date">${dow} ${p.d} ${MN[p.m-1]}</div>
+        <div class="s-up-what">${_esc(ev.what || "")}</div>
+        <div class="s-up-time">${timeLabel}${ev.where?` · ${_esc(ev.where)}`:""}</div>
+      </div>`;
+    }).join("");
+    return `<div class="starred-split">
+      <div class="starred-split-grids"><div class="s-grid-wrap">${grids.join("")}</div></div>
+      <aside class="starred-split-up">
+        <h3>Up next</h3>
+        ${upNext || `<div class="s-empty-line">— nothing starred —</div>`}
+      </aside>
+    </div>`;
+  }
+
+  _renderStarredTimeline(evs) {
+    const today = this._todayStr();
+    const t0p = this._isoParts(today);
+    const t0 = new Date(t0p.y, t0p.m - 1, t0p.d).getTime();
+    const horizonDt = new Date(t0p.y, t0p.m - 1, t0p.d + 183);
+    const t1 = horizonDt.getTime();
+    const span = Math.max(1, t1 - t0);
+    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const ticks = [];
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(t0p.y, t0p.m - 1 + i, 1);
+      const pct = Math.max(0, Math.min(100, (dt.getTime() - t0) / span * 100));
+      ticks.push(`<div class="tl-tick" style="left:${pct}%">
+        <div class="tl-tick-line"></div>
+        <div class="tl-tick-label">${MN[dt.getMonth()]}</div>
+      </div>`);
+    }
+    const marks = evs.map(ev => {
+      const p = this._isoParts(ev.date);
+      const ms = new Date(p.y, p.m - 1, p.d).getTime();
+      const pct = Math.max(0, Math.min(100, (ms - t0) / span * 100));
+      return `<div class="tl-mark" style="left:${pct}%" title="${_esc(ev.what||"")} — ${ev.date}"><span class="tl-mark-star">★</span></div>`;
+    }).join("");
+    const list = evs.map(ev => {
+      const p = this._isoParts(ev.date);
+      const dt = new Date(p.y, p.m - 1, p.d);
+      const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
+      const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
+        ? _esc(ev.time) : "all day";
+      return `<div class="tl-row">
+        <div class="tl-row-date">${dow} ${p.d} ${MN[p.m-1]}</div>
+        <div class="tl-row-what">${_esc(ev.what||"")}</div>
+        <div class="tl-row-time">${timeLabel}</div>
+      </div>`;
+    }).join("");
+    return `<div class="starred-timeline">
+      <div class="tl-axis">
+        <div class="tl-axis-line"></div>
+        ${ticks.join("")}
+        ${marks}
+      </div>
+      <div class="tl-list">${list}</div>
+    </div>`;
+  }
+
+  _isoParts(iso) {
+    const [ys, ms, ds] = (iso || "").split("-");
+    return { y: parseInt(ys, 10), m: parseInt(ms, 10), d: parseInt(ds, 10) };
+  }
+
   _renderDay(ds, events) {
     const isToday = this._isToday(ds), isTomorrow = this._isTomorrow(ds);
     const d = new Date(ds+"T12:00:00"), isWeekend = d.getDay()===0||d.getDay()===6;
@@ -2747,6 +2982,131 @@ class KatjaScheduleCard extends HTMLElement {
       .action-result { margin-top: 10px; padding: 12px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.4; }
       .action-result.ok { background: rgba(46,139,87,0.15); color: var(--accent); }
       .action-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
+
+      /* ============================================================
+         Starred view — 6-month long-range. Wall-display tuned: large
+         type for at-a-glance reading from across the room; star marks
+         use the same amber as the web app for cross-surface consistency.
+         ============================================================ */
+      .starred-wrap { padding: 14px var(--card-pad); }
+      .starred-head { display: flex; justify-content: space-between;
+                      align-items: center; flex-wrap: wrap; gap: 10px;
+                      padding: 10px 12px; margin-bottom: 12px;
+                      background: linear-gradient(180deg, rgba(229,165,16,0.12) 0%, rgba(229,165,16,0.06) 100%);
+                      border: 1px solid rgba(229,165,16,0.35);
+                      border-radius: 10px; }
+      .starred-head-title { font-size: 18px; font-weight: 700;
+                            color: var(--header-text);
+                            display: flex; align-items: center; gap: 8px; }
+      .s-star { color: #E5A510; font-size: 22px; }
+      .starred-count { font-size: 13px; font-weight: 500; opacity: 0.75; }
+      .starred-pick { display: inline-flex; gap: 0; padding: 2px;
+                       background: rgba(255,255,255,0.06);
+                       border: 1px solid rgba(229,165,16,0.35);
+                       border-radius: 8px; }
+      .s-pick-btn { background: transparent; border: 0; padding: 6px 12px;
+                    font-size: 13px; font-weight: 600; color: var(--muted);
+                    cursor: pointer; border-radius: 6px; font-family: inherit; }
+      .s-pick-btn:hover { background: rgba(229,165,16,0.10); color: var(--text); }
+      .s-pick-btn.active { background: #E5A510; color: #1a1a1a; }
+      .starred-pane { padding: 0; }
+      .starred-loading, .starred-err {
+        text-align: center; padding: 40px 20px; color: var(--muted);
+        font-size: 14px;
+      }
+      .starred-err { color: #FF6B6B; }
+      .starred-empty { text-align: center; padding: 50px 20px; color: var(--muted); }
+      .s-empty-star { font-size: 56px; opacity: 0.3; line-height: 1; }
+      .s-empty-title { font-size: 17px; font-weight: 600; margin-top: 12px; color: var(--text); }
+      .s-empty-hint { font-size: 13px; opacity: 0.7; margin-top: 6px; }
+      .s-empty-line { font-style: italic; opacity: 0.5; padding: 4px 0; font-size: 13px; }
+
+      /* Layout A — vertical agenda */
+      .s-month { margin-bottom: 18px; max-width: 760px; }
+      .s-month h3 { font-size: 12px; letter-spacing: 1.5px;
+                    text-transform: uppercase; color: #E5A510;
+                    margin: 0 0 8px; padding-bottom: 4px;
+                    border-bottom: 1px solid rgba(229,165,16,0.25); }
+      .s-month-empty .s-empty-line { padding: 6px 0 12px; }
+      .s-item { display: grid; grid-template-columns: 76px 1fr auto;
+                 align-items: baseline; gap: 14px; padding: 10px 8px;
+                 border-bottom: 1px solid var(--border); }
+      .s-item-date { font-size: 14px; font-weight: 600; color: var(--muted);
+                     font-variant-numeric: tabular-nums; }
+      .s-item-what { font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.3; }
+      .s-item-where { font-size: 13px; color: var(--muted); margin-top: 2px; }
+      .s-item-time { font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+      /* Layout B — mini-grid + agenda split */
+      .starred-split { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+                        gap: 18px; }
+      .s-grid-wrap { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      .s-mini-month { background: rgba(255,255,255,0.04);
+                       border: 1px solid var(--border);
+                       border-radius: 8px; padding: 10px 8px; }
+      .s-mini-month h4 { font-size: 12px; margin: 0 0 6px;
+                          letter-spacing: 1px; text-transform: uppercase;
+                          text-align: center; color: var(--muted); }
+      .g-dow { display: grid; grid-template-columns: repeat(7, 1fr);
+               font-size: 9.5px; color: var(--muted); text-align: center;
+               margin-bottom: 2px; }
+      .g-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+      .g-cell { aspect-ratio: 1 / 1; display: flex; align-items: center;
+                justify-content: center; font-size: 11px; color: var(--muted);
+                border-radius: 3px; }
+      .g-cell.empty { visibility: hidden; }
+      .g-cell.starred { background: rgba(229,165,16,0.20); color: #E5A510;
+                         font-weight: 700; font-size: 12px; }
+      .g-cell.today { outline: 1.5px solid var(--accent); outline-offset: -1px;
+                       color: var(--accent); font-weight: 700; }
+      .starred-split-up { background: rgba(255,255,255,0.03);
+                           border: 1px solid var(--border); border-radius: 8px;
+                           padding: 10px 12px; }
+      .starred-split-up h3 { font-size: 12px; letter-spacing: 1px;
+                              text-transform: uppercase; color: var(--muted);
+                              margin: 0 0 6px; }
+      .s-up-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+      .s-up-row:last-child { border-bottom: 0; }
+      .s-up-date { font-size: 12px; font-weight: 600; color: var(--muted); }
+      .s-up-what { font-size: 14.5px; font-weight: 600; color: var(--text); margin-top: 2px; }
+      .s-up-time { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+      /* Layout C — timeline ribbon */
+      .starred-timeline { padding: 0 8px; }
+      .tl-axis { position: relative; height: 110px; margin: 16px 8px 8px; }
+      .tl-axis-line { position: absolute; left: 0; right: 0; top: 50%;
+                       height: 2px; background: rgba(229,165,16,0.35);
+                       transform: translateY(-1px); }
+      .tl-tick { position: absolute; top: 0; height: 100%;
+                  transform: translateX(-50%); pointer-events: none; }
+      .tl-tick-line { position: absolute; left: 50%; top: 38%; bottom: 38%;
+                       width: 1px; background: rgba(255,255,255,0.2); }
+      .tl-tick-label { position: absolute; bottom: 2px; left: 50%;
+                        transform: translateX(-50%); font-size: 11px;
+                        color: var(--muted); white-space: nowrap; }
+      .tl-mark { position: absolute; top: 50%;
+                  transform: translate(-50%, -50%);
+                  background: rgba(229,165,16,0.15);
+                  border: 2px solid #E5A510; border-radius: 50%;
+                  width: 26px; height: 26px; display: flex;
+                  align-items: center; justify-content: center;
+                  pointer-events: auto; }
+      .tl-mark-star { color: #E5A510; font-size: 13px; line-height: 1; }
+      .tl-list { margin-top: 18px; }
+      .tl-row { display: grid; grid-template-columns: 130px 1fr auto;
+                 gap: 12px; padding: 8px 0;
+                 border-bottom: 1px solid var(--border); }
+      .tl-row-date { font-size: 13px; font-weight: 600; color: var(--muted); }
+      .tl-row-what { font-size: 14.5px; color: var(--text); font-weight: 600; }
+      .tl-row-time { font-size: 13px; color: var(--muted); }
+
+      @media (max-width: 720px) {
+        .starred-split { grid-template-columns: 1fr; }
+        .s-grid-wrap { grid-template-columns: repeat(2, 1fr); }
+        .tl-axis { height: 80px; }
+        .tl-row { grid-template-columns: 100px 1fr; }
+        .tl-row-time { grid-column: 2; }
+      }
 
       /* Per-theme escape hatch — appended last so it overrides any of the above.
          Lives at card scope only; per-panel customCss is not supported. */
