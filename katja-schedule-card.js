@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.43.0";
+const CARD_VERSION = "0.44.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -808,6 +808,11 @@ class KatjaScheduleCard extends HTMLElement {
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
             _eventId: meta.eventid || "",
+            // fr-2026-05-19 HA-parity: surface multi-day end + star
+            // state so downstream rendering can fan the event across
+            // every spanned day and show per-row star indicators.
+            _dtEnd: meta.dtend || "",
+            _starred: meta.starred === "1",
           });
         }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
@@ -932,7 +937,12 @@ class KatjaScheduleCard extends HTMLElement {
       const m = line.match(/^\s*(\w+)\s*:\s*(.+)\s*$/);
       if (!m) continue;
       const k = m[1].toLowerCase();
-      if (k === "who" || k === "status" || k === "where" || k === "flight" || k === "source" || k === "eventid") {
+      // Allowlist of keys the integration emits in calendar.py
+      // _to_calendar_event. `dtend` and `starred` were added by the
+      // fr-2026-05-19 HA-parity sweep so the card can fan multi-day
+      // spans across every covered day and show per-row star state.
+      if (k === "who" || k === "status" || k === "where" || k === "flight"
+          || k === "source" || k === "eventid" || k === "dtend" || k === "starred") {
         out[k] = m[2].trim();
       }
     }
@@ -948,6 +958,59 @@ class KatjaScheduleCard extends HTMLElement {
     for (const d of Object.keys(g))
       g[d].sort((a,b) => (a.start?.dateTime||a.start?.date||"").localeCompare(b.start?.dateTime||b.start?.date||""));
     return g;
+  }
+
+  // fr-2026-05-18-a / fr-2026-05-19-b: fan multi-day spanning events
+  // (`DtEnd: YYYY-MM-DD` in the calendar description, inclusive last
+  // day per the overlay convention) onto every day they cover. Each
+  // covered day gets its own virtual event entry — start-day copy
+  // retains the original `summary` and `_dtEnd`; intermediate / end-
+  // day copies are flagged `_isContinuation: true` and re-anchored
+  // to that day's date so `_groupByDate` files them under the right
+  // bucket. The web app's renderer does the same pass server-side
+  // (renderer.py:384-413) — mirroring it here keeps the HA card
+  // honest with the "agenda-view convention" the outer fr-2026-05-18-a
+  // comment in schedule.html explicitly enforces.
+  _fanOutMultiDay(events) {
+    const out = [];
+    for (const ev of events) {
+      const startDs = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      const endDs = (ev._dtEnd || "").slice(0, 10);
+      if (!startDs || !endDs || endDs <= startDs) {
+        out.push(ev);
+        continue;
+      }
+      // Walk start → end inclusive. First day keeps the original
+      // shape (so existing per-row interactions don't change); each
+      // continuation copy is a shallow clone with a synthetic start.
+      let d;
+      try {
+        d = new Date(startDs + "T12:00:00");
+      } catch (_) { out.push(ev); continue; }
+      const endD = new Date(endDs + "T12:00:00");
+      let first = true;
+      while (d <= endD) {
+        const ds = this._fmt(d);
+        if (first) {
+          out.push({...ev, _spanStart: startDs});
+        } else {
+          out.push({
+            ...ev,
+            start: {date: ds},
+            // Preserve the original event's end so HA's renderer math
+            // still has a valid (start, end) pair on the continuation
+            // copies — the card never reads this back, but stock HA
+            // calendar consumers might if they happen to inspect.
+            end: ev.end,
+            _isContinuation: true,
+            _spanStart: startDs,
+          });
+        }
+        d.setDate(d.getDate() + 1);
+        first = false;
+      }
+    }
+    return out;
   }
 
   // ====================== HELPERS ======================
@@ -1392,6 +1455,53 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionLoading = false; this._render();
   }
 
+  async _toggleStar(ev) {
+    // fr-2026-05-19 HA-parity: toggle household-starred on the
+    // event via the bearer-authed `katja_schedule/star_event` WS
+    // command (registered at __init__.py:401 — uses the same
+    // backend race-protected path the web's row-star click does
+    // after bug-20260519-140916). Optimistic: flip _starred in
+    // place, refetch on success so the persisted state replaces
+    // our optimistic view on the next render.
+    if (!this._hass) return;
+    const what = (ev.summary || "").trim();
+    if (!what) return;
+    const date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+    if (!date) return;
+    const next = !ev._starred;
+    // Optimistic flip — the modal re-renders immediately so the
+    // user sees ★ ↔ ☆ without waiting for the round-trip.
+    ev._starred = next;
+    this._render();
+    this._actionLoading = true;
+    try {
+      this._actionResult = await this._hass.callWS({
+        type: "katja_schedule/star_event",
+        event_id: ev._eventId || "",
+        date,
+        time: ev.start?.dateTime ? "" : "All day",
+        what,
+        who: ev._label || "",
+        starred: next,
+      });
+      if (!this._actionResult || this._actionResult.ok === false) {
+        // Revert the optimistic flip on failure so the modal
+        // matches the persisted state.
+        ev._starred = !next;
+      } else {
+        // Re-fetch on success so any same-id rows elsewhere in
+        // the view (e.g. tomorrow's row) pick up the new state.
+        this._lastFetch = 0;
+        this._fetchEvents();
+      }
+    } catch (e) {
+      ev._starred = !next;
+      this._actionResult = { ok: false, error: e.message };
+    }
+    this._actionLoading = false;
+    this._render();
+  }
+
   async _skipThisWeek(ev) {
     if (!this._hass || !ev?._eventId) return;
     const what = (ev.summary || "").trim();
@@ -1440,6 +1550,12 @@ class KatjaScheduleCard extends HTMLElement {
     } else {
       working = this._events;
     }
+    // fr-2026-05-19 HA-parity: expand multi-day spans BEFORE grouping
+    // so each covered day gets a row. Continuation copies carry
+    // `_isContinuation: true` and a `_spanStart` back-reference so
+    // _renderEvent can style them as faded/italic carry-overs and
+    // the click handler can still resolve them to the same modal.
+    working = this._fanOutMultiDay(working);
     // _renderEvent and the click handler index into _renderedEvents
     // (this can include ghost rows that aren't in this._events).
     this._renderedEvents = working;
@@ -1578,7 +1694,21 @@ class KatjaScheduleCard extends HTMLElement {
       // Acting on them happens from the web schedule (Approve/Reject
       // inline). Skip the detail modal in that case.
       const isGhost = ev._pendingProposal?.kind === "add" && !ev._eventId;
-      if (!isGhost) this._openDetail(ev);
+      if (isGhost) return;
+      // Continuation copies (fr-2026-05-19 fanout) re-anchor `start`
+      // to the per-day date so _groupByDate files them under the
+      // right bucket. Clicking one should open the canonical start-
+      // day modal — same span info, but the date shown matches what
+      // the user thinks of as the event's start.
+      let target = ev;
+      if (ev._isContinuation && ev._spanStart && ev._eventId) {
+        const startCopy = (this._renderedEvents || []).find(e =>
+          e._eventId === ev._eventId
+          && !e._isContinuation
+          && (e.start?.date || e.start?.dateTime || "").slice(0, 10) === ev._spanStart);
+        if (startCopy) target = startCopy;
+      }
+      this._openDetail(target);
     }));
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._reviewOpen) this._closeReview();
@@ -1629,6 +1759,7 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
     this.shadowRoot.querySelector(".skip-week-btn")?.addEventListener("click", () => this._skipThisWeek(this._detailEvent));
+    this.shadowRoot.querySelector(".modal-star")?.addEventListener("click", () => this._toggleStar(this._detailEvent));
     // fr-2026-05-11-b: inline Accept/Reject on the event-detail sheet.
     this.shadowRoot.querySelector(".inline-apply")?.addEventListener("click", async (e) => {
       const id = e.currentTarget.getAttribute("data-pe-id");
@@ -1984,12 +2115,28 @@ class KatjaScheduleCard extends HTMLElement {
       }
     }
 
+    // fr-2026-05-19 HA-parity: surface a star toggle in the modal
+    // header so the user can pin events to the Starred view from
+    // any layout — same affordance the web app's event sheet has.
+    // The button is hidden when the row isn't actionable (ghost
+    // pending-add rows have no real event yet) but is otherwise
+    // always present; the underlying WS endpoint accepts a
+    // composite-key fallback so manual rows without an event_id
+    // still work.
+    const starButton = (ev._eventId !== undefined && summary) ? `
+      <button class="modal-star ${ev._starred ? 'is-starred' : ''}"
+              ${this._actionLoading ? 'disabled' : ''}
+              aria-pressed="${ev._starred ? 'true' : 'false'}"
+              title="${ev._starred ? 'Unstar this event' : 'Star this event'}">
+        ${ev._starred ? '★' : '☆'}
+      </button>` : "";
     return `
       <div class="modal-backdrop">
         <div class="modal">
           <div class="modal-header">
             <span class="modal-dot" style="background:${_esc(color)}"></span>
             <span class="modal-title">${_esc(summary)}</span>
+            ${starButton}
             <button class="modal-close">✕</button>
           </div>
           <div class="modal-body">
@@ -2451,7 +2598,21 @@ class KatjaScheduleCard extends HTMLElement {
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
     const flaggedTag = flagged ? `<span class="flag-tag">${_esc(this._flaggedLabel(ev))}</span>` : "";
     const colorAttr = _esc(ev._color || "#888");
-    return `<div class="event${isDrive?" is-drive":""}${pendingClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${_esc(summary)} ${flightBadge}${pendingTag}${flaggedTag}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    // fr-2026-05-19-b parity: continuation rows (intermediate / end
+    // days of a multi-day span) render italic + faded with a "↳ "
+    // prefix on the summary — same convention the web app's list
+    // views use so the user sees the carry-over without it reading
+    // as a fresh independent event. Start-day row keeps the full
+    // shape and (when this is a multi-day event) gets a "→ end-date"
+    // chip so the span anchor is obvious.
+    const isContinuation = !!ev._isContinuation;
+    const isSpanStart = !isContinuation && !!ev._dtEnd && ev._dtEnd > (ev.start?.date || ev.start?.dateTime || "").slice(0, 10);
+    const contClass = isContinuation ? " is-continuation" : "";
+    const contStyle = isContinuation ? " font-style:italic; opacity:0.72;" : "";
+    const summaryPrefix = isContinuation ? "↳ " : "";
+    const starIndicator = ev._starred ? `<span class="row-star-indicator" title="Starred">★</span>` : "";
+    const spanChip = isSpanStart ? `<span class="multi-day-chip" title="Continues through ${_esc(ev._dtEnd)}">→ ${_esc(ev._dtEnd)}</span>` : "";
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   _renderCalendarGrid(days, grouped) {
@@ -2745,6 +2906,13 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-drive .event-time { color: var(--muted); opacity: 0.6; }
       .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
       .flag-tag { display: inline-flex; align-items: center; background: rgba(255,100,100,0.15); color: #FF6B6B; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; }
+      /* fr-2026-05-18-a / fr-2026-05-19-b parity: the "→ end-date"
+         chip on the start day of a multi-day span, and a star
+         indicator (★) for household-starred events. Both sit inline
+         in the .event-summary alongside the other tags. */
+      .multi-day-chip { display: inline-flex; align-items: center; background: rgba(229,165,16,0.18); color: #B07900; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.2px; }
+      .row-star-indicator { color: #E5A510; font-size: 14px; line-height: 1; margin-left: 2px; }
+      .event.is-continuation .event-summary { color: var(--muted); }
       /* fr-2026-05-07-d: pending-proposal badge in parity with web.
          Amber for add/update (needs review), red for remove (would
          delete). Dashed border on the row + amber tint signals "agent
@@ -2852,6 +3020,16 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
       .modal-close { background: transparent; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); }
       .modal-close:hover { background: var(--event-hover); color: var(--text-strong); }
+      /* fr-2026-05-19 HA-parity: star toggle in the modal header
+         mirrors the web app's row-star — gold when filled, muted
+         outline when not, scales down briefly on click for haptic
+         affordance. */
+      .modal-star { background: transparent; border: none; color: var(--muted); font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); line-height: 1; }
+      .modal-star:hover { background: var(--event-hover); color: #E5A510; }
+      .modal-star.is-starred { color: #E5A510; }
+      .modal-star.is-starred:hover { color: #C48E0E; }
+      .modal-star:active { transform: scale(0.92); }
+      .modal-star:disabled { opacity: 0.5; cursor: wait; }
       .modal-body { padding: 16px 20px; }
       .modal-row { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 1.4; }
       .modal-row:last-child { border-bottom: none; }
