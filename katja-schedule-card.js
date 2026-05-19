@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.44.0";
+const CARD_VERSION = "0.45.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -813,6 +813,7 @@ class KatjaScheduleCard extends HTMLElement {
             // every spanned day and show per-row star indicators.
             _dtEnd: meta.dtend || "",
             _starred: meta.starred === "1",
+            _recurringEventId: meta.recurringeventid || "",
           });
         }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
@@ -942,7 +943,8 @@ class KatjaScheduleCard extends HTMLElement {
       // fr-2026-05-19 HA-parity sweep so the card can fan multi-day
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "status" || k === "where" || k === "flight"
-          || k === "source" || k === "eventid" || k === "dtend" || k === "starred") {
+          || k === "source" || k === "eventid" || k === "dtend" || k === "starred"
+          || k === "recurringeventid") {
         out[k] = m[2].trim();
       }
     }
@@ -1463,34 +1465,53 @@ class KatjaScheduleCard extends HTMLElement {
     // after bug-20260519-140916). Optimistic: flip _starred in
     // place, refetch on success so the persisted state replaces
     // our optimistic view on the next render.
+    //
+    // bug-20260512-211958 parity: when starring (next=true) a
+    // recurring-event instance, prompt the user whether they want
+    // to star EVERY future occurrence (mode=series) — same as the
+    // web's recurring-event prompt. Unstar is always per-instance
+    // by design (the user may want to keep most of a series
+    // starred but drop a specific week).
     if (!this._hass) return;
     const what = (ev.summary || "").trim();
     if (!what) return;
     const date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
     if (!date) return;
     const next = !ev._starred;
+    const recId = ev._recurringEventId || "";
+    let useSeries = false;
+    if (next && recId) {
+      useSeries = window.confirm(
+        `"${what}" is a recurring event.\n\n` +
+        "OK = Star all upcoming occurrences\n" +
+        "Cancel = Just this one"
+      );
+    }
     // Optimistic flip — the modal re-renders immediately so the
     // user sees ★ ↔ ☆ without waiting for the round-trip.
     ev._starred = next;
     this._render();
     this._actionLoading = true;
     try {
-      this._actionResult = await this._hass.callWS({
-        type: "katja_schedule/star_event",
-        event_id: ev._eventId || "",
-        date,
-        time: ev.start?.dateTime ? "" : "All day",
-        what,
-        who: ev._label || "",
-        starred: next,
-      });
+      const msg = useSeries
+        ? {type: "katja_schedule/star_event",
+           mode: "series", recurring_event_id: recId, starred: next}
+        : {type: "katja_schedule/star_event",
+           event_id: ev._eventId || "",
+           date,
+           time: ev.start?.dateTime ? "" : "All day",
+           what,
+           who: ev._label || "",
+           starred: next};
+      this._actionResult = await this._hass.callWS(msg);
       if (!this._actionResult || this._actionResult.ok === false) {
         // Revert the optimistic flip on failure so the modal
         // matches the persisted state.
         ev._starred = !next;
       } else {
         // Re-fetch on success so any same-id rows elsewhere in
-        // the view (e.g. tomorrow's row) pick up the new state.
+        // the view (e.g. tomorrow's row, other series instances)
+        // pick up the new state.
         this._lastFetch = 0;
         this._fetchEvents();
       }
