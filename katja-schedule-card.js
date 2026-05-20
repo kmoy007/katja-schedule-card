@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.45.0";
+const CARD_VERSION = "0.46.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1313,8 +1313,10 @@ class KatjaScheduleCard extends HTMLElement {
     for (const id of ids) this._reviewActionPending.add(id);
     this._reviewActionError = null;
     this._render();
+    let ok = false;
     try {
       await this._hass.callWS({type: wsType, ...(msgExtra || {})});
+      ok = true;
     } catch (e) {
       console.warn("KATJA review action failed:", wsType, e);
       // Surface the failure so the user knows the action didn't run
@@ -1326,6 +1328,26 @@ class KatjaScheduleCard extends HTMLElement {
     }
     for (const id of ids) this._reviewActionPending.delete(id);
     await this._refreshReview();
+    if (ok) this._flashToast("Schedule updated");
+  }
+
+  // fr-2026-05-19 HA-parity: transient toast pill after any
+  // successful WS mutation. The web app shows "Schedule updated by
+  // agent · Reloading..." 3s after agent mutations; the card
+  // refetches immediately so a static "Schedule updated" pill is
+  // enough to confirm the action landed. Auto-clears after 2.5s.
+  // Last-write-wins: a rapid second mutation replaces the toast
+  // rather than queuing.
+  _flashToast(message, ms = 2500) {
+    if (!this.shadowRoot) return;
+    this._actionToast = {message, key: Date.now()};
+    if (this._actionToastTimer) clearTimeout(this._actionToastTimer);
+    this._actionToastTimer = setTimeout(() => {
+      this._actionToast = null;
+      this._actionToastTimer = null;
+      this._render();
+    }, ms);
+    this._render();
   }
   // Per-row shortcuts the modal buttons + the inline event-detail
   // sheet share (fr-2026-05-11-b inline parity).
@@ -1509,6 +1531,7 @@ class KatjaScheduleCard extends HTMLElement {
         // matches the persisted state.
         ev._starred = !next;
       } else {
+        this._flashToast(useSeries ? "Series starred" : (next ? "Starred" : "Unstarred"));
         // Re-fetch on success so any same-id rows elsewhere in
         // the view (e.g. tomorrow's row, other series instances)
         // pick up the new state.
@@ -1539,6 +1562,7 @@ class KatjaScheduleCard extends HTMLElement {
         type: "katja_schedule/skip_week",
         event_id: ev._eventId,
       });
+      this._flashToast("Skipped this week");
       // Trigger a re-fetch so the prefixed/strikethrough form shows up.
       this._lastFetch = 0;
       this._closeDetail();
@@ -1665,6 +1689,12 @@ class KatjaScheduleCard extends HTMLElement {
       : "";
 
     const seamClasses = Array.from(this._seam).map(s => ` seam-${s}`).join("");
+    // fr-2026-05-19 HA-parity: transient "Schedule updated" toast
+    // after any successful WS mutation (star, skip-week, review-
+    // queue actions). Mirrors the web app's auto-reload pill — the
+    // card refetches immediately so it's a confirmation toast, not
+    // a 4.5s reload countdown.
+    const toast = this._actionToast ? `<div class="action-toast" data-key="${this._actionToast.key}">${_esc(this._actionToast.message)}</div>` : "";
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
       <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
@@ -1687,7 +1717,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${globalFlaggedBtnHTML}
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
         </div>` : ""}
-        ${body}${modal}
+        ${body}${modal}${toast}
       </div></ha-card>`;
 
     // Bind events
@@ -1696,6 +1726,29 @@ class KatjaScheduleCard extends HTMLElement {
       e.stopPropagation();
       this._switchStarredSubLayout(btn.getAttribute("data-starred-sub") || "a");
     }));
+    // D Flow / E M3 chip taps open the detail modal. Starred events
+    // are fetched separately (list_starred_events) and aren't in
+    // _renderedEvents, so synthesize the detail shape directly from
+    // the chip's data-flow-* attrs.
+    this.shadowRoot.querySelectorAll(".flow-event").forEach(btn => btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const detail = this._starredEventToDetailShape({
+        event_id: btn.dataset.flowEventId || "",
+        date: btn.dataset.flowDate || "",
+        time: btn.dataset.flowTime || "",
+        what: btn.dataset.flowWhat || "",
+        who: btn.dataset.flowWho || "",
+        where: btn.dataset.flowWhere || "",
+        notes: btn.dataset.flowNotes || "",
+        dt_end: btn.dataset.flowDtEnd || "",
+        recurring_event_id: btn.dataset.flowRecurringId || "",
+      });
+      this._openDetail(detail);
+    }));
+    this.shadowRoot.querySelector(".flow-jump-today")?.addEventListener("click", () => {
+      const todayCell = this.shadowRoot.querySelector('[data-flow-today="1"]');
+      if (todayCell) todayCell.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
     // fr-2026-05-11-a: per-day 🗑 buttons. Each carries data-day-flagged
@@ -1849,23 +1902,39 @@ class KatjaScheduleCard extends HTMLElement {
       const dis = allDisabled ? " disabled" : "";
 
       // ---- Section: recurring batches ------------------------------
+      // bug-20260507-181539: web's _detect_recurring_batches returns
+      // TWO kinds — `calendar-new` (NEW rows from Google, dispatched
+      // via Accept all / Hide all on event_ids) and `agent-add` (agent
+      // proposed N weekly soccer practices, dispatched via Apply all /
+      // Reject all on proposal_ids). The card was rendering both kinds
+      // as calendar-new — agent-add batches arrived with empty
+      // event_ids so the buttons posted no-ops. Branch on b.kind so
+      // each kind gets the right action + correct id-set.
       let batchesHtml = "";
       if (batches.length) {
         batchesHtml = `<div class="review-section">
           <h3 class="review-section-title">Recurring batches</h3>
           ${batches.map(b => {
-            const ids = b.event_ids || [];
-            const acceptingNow = ids.every(i => pending.has(i));
-            const aDis = (allDisabled || acceptingNow) ? " disabled" : "";
+            const isAgentAdd = b.kind === "agent-add";
+            const ids = isAgentAdd ? (b.proposal_ids || []) : (b.event_ids || []);
+            const acceptingNow = ids.length > 0 && ids.every(i => pending.has(i));
+            const aDis = (allDisabled || acceptingNow || ids.length === 0) ? " disabled" : "";
+            const kindLabel = isAgentAdd ? "Agent-proposed" : "Calendar";
+            const idsAttr = isAgentAdd ? "data-proposal-ids" : "data-event-ids";
+            const acceptAction = isAgentAdd ? "applyProposalsBatch" : "acceptBatch";
+            const declineAction = isAgentAdd ? "rejectProposalsBatch" : "hideBatch";
+            const acceptLabel = isAgentAdd ? "Apply" : "Accept";
+            const declineLabel = isAgentAdd ? "Reject" : "Hide";
             return `<div class="review-batch">
               <div class="review-batch-summary">
-                <strong>${_esc(b.what || "")}</strong> · ${_esc(b.who || "")} ·
+                <span class="review-batch-kind">${_esc(kindLabel)}</span>
+                <strong>${_esc(b.what || "")}</strong>${b.who ? " · " + _esc(b.who) : ""} ·
                 ${b.count} occurrences
                 <span class="review-batch-dates">${_esc((b.dates || []).slice(0,3).join(", "))}${(b.dates||[]).length>3?"…":""}</span>
               </div>
               <div class="review-actions">
-                <button class="review-btn accept" data-review-action="acceptBatch" data-event-ids="${_esc(ids.join(","))}"${aDis}>Accept all ${b.count}</button>
-                <button class="review-btn hide" data-review-action="hideBatch" data-event-ids="${_esc(ids.join(","))}"${aDis}>Hide all ${b.count}</button>
+                <button class="review-btn accept" data-review-action="${acceptAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${acceptLabel} all ${b.count}</button>
+                <button class="review-btn hide" data-review-action="${declineAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${declineLabel} all ${b.count}</button>
               </div>
             </div>`;
           }).join("")}
@@ -2388,10 +2457,293 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _switchStarredSubLayout(sub) {
-    if (!["a", "b", "c"].includes(sub)) return;
+    if (!["a", "b", "c", "d", "e"].includes(sub)) return;
     this._starredSubLayout = sub;
     try { localStorage.setItem("katja_starred_layout_v1", sub); } catch (_) {}
     this._render();
+  }
+
+  // ============================================================
+  // D Flow / E M3 helpers (fr-2026-05-19 HA-parity sweep, port of
+  // web templates/schedule.html:6240-6772). All date math runs on
+  // 'YYYY-MM-DD' Pacific strings so DST never shifts a chip into
+  // the wrong column. Kept as instance methods (rather than module
+  // helpers) so the JS file stays single-file per the card's no-
+  // build-system rule.
+  // ============================================================
+  _isoToParts(iso) {
+    const [ys, ms, ds] = iso.split("-");
+    const y = parseInt(ys, 10), m = parseInt(ms, 10), d = parseInt(ds, 10);
+    const dt = new Date(y, m - 1, d);
+    return { y, m, d, wd: dt.getDay(), dt };
+  }
+  _isoAddDays(iso, n) {
+    const p = this._isoToParts(iso);
+    const dt = new Date(p.y, p.m - 1, p.d + n);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  }
+  _isoMondayOf(iso) {
+    const p = this._isoToParts(iso);
+    const fromMon = (p.wd + 6) % 7;
+    return this._isoAddDays(iso, -fromMon);
+  }
+  _daysBetween(isoA, isoB) {
+    const a = this._isoToParts(isoA).dt;
+    const b = this._isoToParts(isoB).dt;
+    return Math.round((b - a) / 86400000);
+  }
+  _isoWeekNum(iso) {
+    const p = this._isoToParts(iso);
+    const d = new Date(Date.UTC(p.y, p.m - 1, p.d));
+    const dow = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dow);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  }
+  _flowHash(s) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h;
+  }
+  _flowColors(what) {
+    // Stable HSL pastel from hash(what) — recurring events keep the
+    // same color across renders so the eye can follow a multi-week
+    // series.
+    const hue = this._flowHash(what || "?") % 360;
+    return { bg: `hsl(${hue} 70% 92%)`, edge: `hsl(${hue} 40% 60%)` };
+  }
+  _coalesceConsecutive(events) {
+    // bug-20260515-161604 parity: a multi-day event that arrives as N
+    // back-to-back per-day rows (e.g. a calendar that emits one entry
+    // per day for the same span) merges into a single bar. Group by
+    // (what|who|time); within each group walk in date order and
+    // extend the current span's dt_end whenever the next entry
+    // starts within one day of it.
+    const groups = new Map();
+    for (const ev of events) {
+      const k = `${(ev.what || "").trim().toLowerCase()}|`
+             + `${(ev.who || "").trim().toLowerCase()}|`
+             + `${(ev.time || "").trim().toLowerCase()}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(ev);
+    }
+    const out = [];
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      let cur = null;
+      for (const ev of arr) {
+        const end = (ev.dt_end && ev.dt_end >= ev.date) ? ev.dt_end : ev.date;
+        if (cur) {
+          const dayAfterCur = this._isoAddDays(cur.dt_end, 1);
+          if (ev.date <= dayAfterCur) {
+            if (end > cur.dt_end) cur.dt_end = end;
+            continue;
+          }
+          out.push(cur);
+        }
+        cur = Object.assign({}, ev, { dt_end: end });
+      }
+      if (cur) out.push(cur);
+    }
+    return out;
+  }
+
+  // D Flow main renderer. Returns an HTML string; the caller appends
+  // into the starred pane. `variant === "m3"` only changes which CSS
+  // selector matches; the DOM is identical so toggling sub-layouts
+  // never requires a re-fetch.
+  _renderStarredFlow(events, variant) {
+    if (!events.length) {
+      return `<div class="starred-empty">
+        <div class="s-empty-star">☆</div>
+        <div class="s-empty-title">No starred events in the next 6 months</div>
+        <div class="s-empty-hint">Star events from the web app to populate this view.</div>
+      </div>`;
+    }
+    const today = this._todayStr();
+    const startMon = this._isoMondayOf(today);
+    const WEEKS = 26;
+    const horizonSun = this._isoAddDays(startMon, WEEKS * 7 - 1);
+
+    const eventsByKey = new Map();
+    for (const ev of events) {
+      const key = ev.event_id ||
+        `_${ev.date}|${ev.what}|${ev.who}|${ev.time}`;
+      const cur = eventsByKey.get(key);
+      if (!cur || ev.date < cur.date) eventsByKey.set(key, ev);
+    }
+    const uniqEvents = this._coalesceConsecutive(Array.from(eventsByKey.values()));
+
+    const weeks = [];
+    for (let w = 0; w < WEEKS; w++) {
+      const mon = this._isoAddDays(startMon, w * 7);
+      weeks.push({ mon, sun: this._isoAddDays(mon, 6), items: [] });
+    }
+    for (const ev of uniqEvents) {
+      const start = ev.date;
+      const end = (ev.dt_end && ev.dt_end >= ev.date) ? ev.dt_end : ev.date;
+      if (end < startMon || start > horizonSun) continue;
+      for (const w of weeks) {
+        if (end < w.mon || start > w.sun) continue;
+        const colStart = Math.max(0, this._daysBetween(w.mon, start));
+        const colEnd = Math.min(6, this._daysBetween(w.mon, end));
+        w.items.push({
+          ev, colStart, colEnd,
+          continuesLeft: start < w.mon,
+          continuesRight: end > w.sun,
+        });
+      }
+    }
+
+    // Track-pack each week — prefer the same track as the previous
+    // week for multi-week events so the eye can follow the span.
+    const trackPref = new Map();
+    for (const w of weeks) {
+      w.items.sort((a, b) => {
+        const sa = a.colEnd - a.colStart, sb = b.colEnd - b.colStart;
+        if (sb !== sa) return sb - sa;
+        if (a.colStart !== b.colStart) return a.colStart - b.colStart;
+        return (a.ev.time || "").localeCompare(b.ev.time || "");
+      });
+      const occupied = [];
+      const trackFree = (ranges, s, e) => {
+        if (!ranges) return true;
+        for (const [rs, re] of ranges) if (!(e < rs || s > re)) return false;
+        return true;
+      };
+      for (const it of w.items) {
+        const key = it.ev.event_id || `_${it.ev.what}|${it.ev.who}`;
+        const pref = trackPref.get(key);
+        let track = -1;
+        if (pref !== undefined && trackFree(occupied[pref], it.colStart, it.colEnd)) {
+          track = pref;
+        } else {
+          for (let t = 0; t < 24; t++) {
+            if (trackFree(occupied[t], it.colStart, it.colEnd)) { track = t; break; }
+          }
+        }
+        if (track < 0) track = 24;
+        (occupied[track] = occupied[track] || []).push([it.colStart, it.colEnd]);
+        it.track = track;
+        trackPref.set(key, track);
+      }
+    }
+
+    const todayParts = this._isoToParts(today);
+    const todayLabel = `${MONTH_NAMES[todayParts.m - 1]} ${todayParts.y}`;
+    const variantCls = variant === "m3" ? " is-m3" : "";
+    let html = `
+      <div class="starred-layout-d${variantCls}">
+        <div class="flow-sticky-head">
+          <span class="flow-sticky-label">${todayLabel}</span>
+          <button type="button" class="flow-jump-today">Jump to today</button>
+        </div>
+        <div class="flow-dow">
+          <span class="flow-dow-gutter">wk</span>
+          <span>Mon</span><span>Tue</span><span>Wed</span>
+          <span>Thu</span><span>Fri</span>
+          <span class="is-weekend">Sat</span>
+          <span class="is-weekend">Sun</span>
+        </div>`;
+    for (let wi = 0; wi < weeks.length; wi++) {
+      const w = weeks[wi];
+      const trackCount = w.items.length
+        ? Math.max(...w.items.map(it => it.track)) + 1 : 0;
+      const styleVars = `grid-template-rows: auto${" auto".repeat(trackCount)};`;
+      const altCls = (wi % 2 === 1) ? " is-alt" : "";
+      html += `<div class="flow-week${altCls}" data-week-mon="${w.mon}" style="${styleVars}">`;
+      html += `<div class="flow-week-rules">${"<span></span>".repeat(8)}</div>`;
+      html += `<div class="flow-week-num">${this._isoWeekNum(w.mon)}</div>`;
+      for (let d = 0; d < 7; d++) {
+        const iso = this._isoAddDays(w.mon, d);
+        const bgCls = ["flow-day-bg"];
+        if (iso === today) bgCls.push("is-today");
+        else if (iso < today) bgCls.push("is-past");
+        html += `<div class="${bgCls.join(" ")}" style="grid-column:${d + 2};grid-row:1 / -1;"></div>`;
+      }
+      for (let d = 0; d < 7; d++) {
+        const iso = this._isoAddDays(w.mon, d);
+        const p = this._isoToParts(iso);
+        const cls = ["flow-day-num"];
+        if (iso === today) cls.push("is-today");
+        if (iso < today) cls.push("is-past");
+        if (p.wd === 0 || p.wd === 6) cls.push("is-weekend");
+        const monthName = MONTH_NAMES[p.m - 1];
+        const inner = p.d === 1
+          ? `<span class="flow-day-d">${p.d}</span><span class="flow-month-pill">${monthName}</span>`
+          : `<span class="flow-day-d">${p.d}</span><span class="flow-month-tag">${monthName}</span>`;
+        const todayAttr = iso === today ? ' data-flow-today="1"' : "";
+        html += `<div class="${cls.join(" ")}" style="grid-column:${d + 2};"${todayAttr}>${inner}</div>`;
+      }
+      for (const it of w.items) {
+        const { bg, edge } = this._flowColors(it.ev.what);
+        const cls = ["flow-event"];
+        if (it.continuesLeft) cls.push("is-continuation");
+        if (it.continuesRight) cls.push("is-continued");
+        const titleText = `${it.ev.what || ""} · ${it.ev.date || ""}${it.ev.time ? " " + it.ev.time : ""}`;
+        html += `
+          <button type="button" class="${cls.join(" ")}"
+                  style="--c:${bg};--ce:${edge};--col-start:${it.colStart + 2};--col-end:${it.colEnd + 3};--track:${it.track + 2};"
+                  title="${_esc(titleText)}"
+                  data-flow-event-id="${_esc(it.ev.event_id || "")}"
+                  data-flow-date="${_esc(it.ev.date || "")}"
+                  data-flow-time="${_esc(it.ev.time || "")}"
+                  data-flow-what="${_esc(it.ev.what || "")}"
+                  data-flow-who="${_esc(it.ev.who || "")}"
+                  data-flow-where="${_esc(it.ev.where || "")}"
+                  data-flow-notes="${_esc(it.ev.notes || "")}"
+                  data-flow-dt-end="${_esc(it.ev.dt_end || "")}"
+                  data-flow-recurring-id="${_esc(it.ev.recurring_event_id || "")}">
+            ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
+            <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
+            ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
+          </button>`;
+      }
+      html += "</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  // Convert a starred-events feed row into the shape `_openDetail`
+  // expects (mirrors what _fetchEvents pushes for live calendar
+  // entries). Used by the D Flow / E M3 chip click handler since
+  // starred events come from a separate WS feed and aren't in
+  // this._renderedEvents.
+  _starredEventToDetailShape(ev) {
+    const date = ev.date || "";
+    const dtEnd = ev.dt_end || "";
+    const isAllDay = !ev.time || /^all\s*day/i.test(ev.time || "");
+    const start = isAllDay ? { date } : { dateTime: `${date}T00:00:00` };
+    const end = isAllDay
+      ? { date: dtEnd ? this._isoAddDays(dtEnd, 1) : this._isoAddDays(date, 1) }
+      : { dateTime: `${date}T23:59:00` };
+    const desc = [];
+    if (ev.who) desc.push(`Who: ${ev.who}`);
+    if (ev.status) desc.push(`Status: ${ev.status}`);
+    if (ev.where) desc.push(`Where: ${ev.where}`);
+    if (ev.event_id) desc.push(`EventId: ${ev.event_id}`);
+    if (dtEnd && dtEnd > date) desc.push(`DtEnd: ${dtEnd}`);
+    desc.push("Starred: 1");
+    if (ev.recurring_event_id) desc.push(`RecurringEventId: ${ev.recurring_event_id}`);
+    const who = (ev.who || "").toLowerCase();
+    const colorKey = who.split(",")[0]?.trim();
+    return {
+      summary: ev.what || "",
+      location: ev.where || "",
+      description: desc.join("\n"),
+      start, end,
+      _color: PERSON_COLORS[colorKey] || "#888",
+      _label: ev.who || "",
+      _status: ev.status || "",
+      _eventId: ev.event_id || "",
+      _starred: true,
+      _dtEnd: dtEnd,
+      _recurringEventId: ev.recurring_event_id || "",
+    };
   }
 
   _renderStarredView() {
@@ -2403,7 +2755,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${this._starredFetched ? `<span class="starred-count">· ${evs.length} event${evs.length===1?"":"s"}</span>` : ""}
         </div>
         <div class="starred-pick">
-          ${[["a","A Agenda"],["b","B Grid"],["c","C Timeline"]].map(([k,l]) =>
+          ${[["d","D Flow"],["e","E M3"],["a","A Agenda"],["b","B Grid"],["c","C Timeline"]].map(([k,l]) =>
             `<button class="s-pick-btn${sub===k?" active":""}" data-starred-sub="${k}">${l}</button>`
           ).join("")}
         </div>
@@ -2423,8 +2775,12 @@ class KatjaScheduleCard extends HTMLElement {
       pane = this._renderStarredAgenda(evs);
     } else if (sub === "b") {
       pane = this._renderStarredGridSplit(evs);
-    } else {
+    } else if (sub === "c") {
       pane = this._renderStarredTimeline(evs);
+    } else if (sub === "d") {
+      pane = this._renderStarredFlow(evs);
+    } else {
+      pane = this._renderStarredFlow(evs, "m3");
     }
     return `<div class="starred-wrap">${header}<div class="starred-pane">${pane}</div></div>`;
   }
@@ -3041,6 +3397,18 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
       .modal-close { background: transparent; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); }
       .modal-close:hover { background: var(--event-hover); color: var(--text-strong); }
+      /* fr-2026-05-19 HA-parity: post-mutation toast pill. Bottom-
+         center, fades in via CSS animation. Auto-removed by JS
+         after 2.5s; the @keyframes here drives the in/out fade
+         within that window. */
+      .action-toast { position: fixed; bottom: 24px; left: 50%;
+        transform: translateX(-50%); background: rgba(34,34,34,0.92);
+        color: #fff; padding: 8px 18px; border-radius: 999px;
+        font-size: 13px; font-weight: 600; letter-spacing: 0.2px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25); z-index: 10000;
+        animation: katja-toast-in 0.25s ease, katja-toast-out 0.4s ease 2.1s forwards; }
+      @keyframes katja-toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+      @keyframes katja-toast-out { from { opacity: 1; } to { opacity: 0; } }
       /* fr-2026-05-19 HA-parity: star toggle in the modal header
          mirrors the web app's row-star — gold when filled, muted
          outline when not, scales down briefly on click for haptic
@@ -3097,6 +3465,14 @@ class KatjaScheduleCard extends HTMLElement {
       .review-batch-summary { flex: 1; font-size: 13px; line-height: 1.4; }
       .review-batch-dates { font-size: 11px; color: var(--muted);
         display: block; margin-top: 2px; }
+      /* Agent-proposed vs calendar-new batches — small kind chip in
+         the batch summary so the user knows whether tapping the
+         Accept/Apply button hits the calendar-promote path or the
+         agent-proposal-apply path. */
+      .review-batch-kind { display: inline-block; font-size: 10px;
+        font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+        color: var(--muted); background: rgba(255,255,255,0.08);
+        padding: 1px 6px; border-radius: 999px; margin-right: 6px; }
       .review-group { border: 1px solid var(--border);
         border-radius: var(--radius-sm); margin-bottom: 8px; overflow: hidden; }
       .review-item { display: flex; gap: 10px; align-items: flex-start;
@@ -3299,12 +3675,212 @@ class KatjaScheduleCard extends HTMLElement {
       .tl-row-what { font-size: 14.5px; color: var(--text); font-weight: 600; }
       .tl-row-time { font-size: 13px; color: var(--muted); }
 
+      /* ============================================================
+         D Flow — port of templates/schedule.html:395-577. A 26-week
+         contiguous calendar where multi-day events render as bars
+         that span across day cells (with continuation arrows at
+         week boundaries). fr-2026-05-19 HA-parity sweep, gap 12.
+         ============================================================ */
+      .starred-layout-d { max-width: 1080px; margin: 0 auto;
+                          padding: 0 6px 24px; }
+      .flow-sticky-head {
+        position: sticky; top: 0; z-index: 6;
+        background: var(--card-bg, var(--ha-card-background, #1a1a1a));
+        padding: 6px 8px 10px; font-size: 15px; font-weight: 700;
+        color: var(--text-strong); letter-spacing: 0.2px;
+        display: flex; align-items: baseline; gap: 10px;
+      }
+      .flow-sticky-head .flow-jump-today {
+        margin-left: auto; font-size: 12px; font-weight: 600;
+        color: var(--accent); background: rgba(229,165,16,0.18);
+        border: 1px solid rgba(229,165,16,0.4);
+        border-radius: 999px; padding: 2px 10px; cursor: pointer;
+      }
+      .flow-sticky-head .flow-jump-today:hover { background: rgba(229,165,16,0.32); }
+      .flow-dow {
+        display: grid;
+        grid-template-columns: 28px repeat(7, minmax(0, 1fr));
+        font-size: 11px; font-weight: 600; color: var(--muted);
+        text-transform: uppercase; letter-spacing: 0.4px;
+        padding: 0 0 4px; border-bottom: 1px solid var(--border);
+        position: sticky; top: 36px;
+        background: var(--card-bg, var(--ha-card-background, #1a1a1a));
+        z-index: 5;
+      }
+      .flow-dow span { padding: 4px 0 4px 6px; }
+      .flow-dow span.is-weekend { opacity: 0.85; }
+      .flow-dow .flow-dow-gutter { opacity: 0.7; font-size: 9.5px; padding-left: 4px; }
+      .flow-week {
+        position: relative;
+        display: grid;
+        grid-template-columns: 28px repeat(7, minmax(0, 1fr));
+        grid-auto-rows: auto;
+        border-bottom: 2px solid rgba(229,165,16,0.32);
+        min-height: 38px;
+      }
+      .flow-week.is-alt { background: rgba(255,255,255,0.03); }
+      .flow-week-num {
+        grid-column: 1; grid-row: 1;
+        font-size: 10px; font-weight: 700; color: var(--muted);
+        padding: 4px 0 0 3px;
+        line-height: 1.1;
+        z-index: 1;
+      }
+      .flow-week-rules {
+        position: absolute; inset: 0;
+        display: grid;
+        grid-template-columns: 28px repeat(7, minmax(0,1fr));
+        pointer-events: none;
+      }
+      .flow-week-rules span:first-child { border-right: 1px solid var(--border); }
+      .flow-week-rules span:not(:first-child):not(:last-child) {
+        border-right: 1px solid rgba(255,255,255,0.06);
+      }
+      .flow-day-num {
+        grid-row: 1;
+        padding: 3px 6px 4px;
+        font-size: 12px; font-weight: 600; color: var(--text);
+        line-height: 1.2;
+        position: relative;
+        display: flex; align-items: baseline; gap: 4px;
+      }
+      .flow-day-num .flow-day-d {
+        font-size: 14px; font-weight: 800; color: var(--text-strong);
+      }
+      .flow-day-num.is-past { opacity: 0.55; }
+      .flow-day-num.is-today {
+        background: rgba(229,165,16,0.35);
+        box-shadow: inset 3px 0 0 #B07A00;
+      }
+      .flow-day-num.is-today .flow-day-d { color: var(--text-strong); }
+      .flow-day-num .flow-month-pill {
+        color: var(--text-strong); font-weight: 800; font-size: 10.5px;
+        text-transform: uppercase; letter-spacing: 0.5px;
+        background: rgba(229,165,16,0.22); padding: 1px 4px;
+        border-radius: 3px;
+      }
+      .flow-day-num .flow-month-tag {
+        font-size: 9px; font-weight: 700; color: var(--muted);
+        text-transform: uppercase; letter-spacing: 0.4px;
+      }
+      .flow-event {
+        grid-row: var(--track);
+        grid-column: var(--col-start) / var(--col-end);
+        margin: 1px 2px;
+        height: 18px; line-height: 18px;
+        padding: 0 7px;
+        border-radius: 4px;
+        background: var(--c, #E0D5B0);
+        color: #1F1F1F;
+        font-size: 11.5px; font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        border: 1px solid var(--ce, #B0A578);
+        cursor: pointer;
+        text-align: left;
+        display: flex; align-items: center; gap: 3px;
+        min-width: 0;
+      }
+      .flow-event:hover { filter: brightness(1.05); }
+      .flow-event.is-continuation {
+        border-top-left-radius: 0; border-bottom-left-radius: 0;
+        border-left-width: 0;
+      }
+      .flow-event.is-continued {
+        border-top-right-radius: 0; border-bottom-right-radius: 0;
+        border-right-width: 0;
+      }
+      .flow-event .flow-arrow {
+        flex: 0 0 auto; font-size: 12px; opacity: 0.55;
+        color: var(--ce, #5A4A20);
+      }
+      .flow-event-title {
+        overflow: hidden; text-overflow: ellipsis;
+        flex: 1 1 auto; min-width: 0;
+      }
+      .flow-day-bg { display: none; }
+
+      /* E M3 — Material 3 Expressive variant of the same grid. The
+         JS DOM is identical; this restyling switches in the
+         "chocolate-bar" per-day rounded cards + Google-Sans-flavored
+         typography. */
+      .starred-layout-d.is-m3 .flow-day-bg {
+        display: block;
+        background: rgba(103,80,164,0.10);
+        border-radius: 12px;
+        margin: 2px 3px 4px;
+        z-index: 0;
+      }
+      .starred-layout-d.is-m3 .flow-day-bg.is-past { background: rgba(103,80,164,0.04); }
+      .starred-layout-d.is-m3 .flow-day-bg.is-today {
+        background: rgba(234,221,255,0.85);
+        box-shadow: 0 0 0 2px #6750A4;
+      }
+      .starred-layout-d.is-m3 .flow-week {
+        border-bottom: 1px solid rgba(202,196,208,0.3);
+        background: transparent;
+        min-height: 56px;
+      }
+      .starred-layout-d.is-m3 .flow-week.is-alt { background: transparent; }
+      .starred-layout-d.is-m3 .flow-week-rules span { border: 0 !important; }
+      .starred-layout-d.is-m3 .flow-week-num {
+        color: #B58CFF; font-weight: 700;
+      }
+      .starred-layout-d.is-m3 .flow-day-num {
+        background: transparent; position: relative; z-index: 2;
+        padding: 6px 10px 4px;
+      }
+      .starred-layout-d.is-m3 .flow-day-num.is-today { background: transparent; box-shadow: none; }
+      .starred-layout-d.is-m3 .flow-day-num .flow-month-pill {
+        background: #6750A4; color: #FFFFFF;
+        font-weight: 600; letter-spacing: 0.3px;
+        padding: 1px 7px; border-radius: 999px; font-size: 9.5px;
+      }
+      .starred-layout-d.is-m3 .flow-event {
+        height: 22px; line-height: 22px;
+        margin: 2px 5px;
+        padding: 0 12px;
+        border: none;
+        border-radius: 16px;
+        color: var(--ce);
+        background: var(--c);
+        font-weight: 600; font-size: 12px;
+        letter-spacing: 0.1px;
+        position: relative; z-index: 1;
+      }
+      .starred-layout-d.is-m3 .flow-event.is-continuation {
+        border-top-left-radius: 4px; border-bottom-left-radius: 4px;
+        margin-left: 0;
+      }
+      .starred-layout-d.is-m3 .flow-event.is-continued {
+        border-top-right-radius: 4px; border-bottom-right-radius: 4px;
+        margin-right: 0;
+      }
+      .starred-layout-d.is-m3 .flow-sticky-head .flow-jump-today {
+        background: rgba(234,221,255,0.85); color: #21005D; border: none;
+      }
+      .starred-layout-d.is-m3 .flow-sticky-head .flow-jump-today:hover {
+        background: #D6BBFF;
+      }
+
       @media (max-width: 720px) {
         .starred-split { grid-template-columns: 1fr; }
         .s-grid-wrap { grid-template-columns: repeat(2, 1fr); }
         .tl-axis { height: 80px; }
         .tl-row { grid-template-columns: 100px 1fr; }
         .tl-row-time { grid-column: 2; }
+        .starred-layout-d { padding: 0 2px 24px; }
+        .flow-dow, .flow-week, .flow-week-rules {
+          grid-template-columns: 20px repeat(7, minmax(0, 1fr));
+        }
+        .flow-week-num { font-size: 9px; padding: 3px 0 0 2px; }
+        .flow-dow .flow-dow-gutter { font-size: 8.5px; padding-left: 2px; }
+        .flow-day-num { padding: 2px 3px 3px; font-size: 11px; gap: 2px; }
+        .flow-day-num .flow-day-d { font-size: 11.5px; }
+        .flow-day-num .flow-month-pill { font-size: 9px; padding: 0 3px; }
+        .flow-day-num .flow-month-tag { font-size: 8px; }
+        .flow-event { font-size: 10.5px; padding: 0 4px;
+                      height: 16px; line-height: 16px; }
+        .flow-dow span { font-size: 10px; padding: 4px 0 4px 3px; }
       }
 
       /* Per-theme escape hatch — appended last so it overrides any of the above.
