@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.47.0";
+const CARD_VERSION = "0.48.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3686,8 +3686,16 @@ class KatjaScheduleCard extends HTMLElement {
          that span across day cells (with continuation arrows at
          week boundaries). fr-2026-05-19 HA-parity sweep, gap 12.
          ============================================================ */
+      /* The D/E grid spans a full 6 months (26 weeks). At natural
+         height that's a ~1500px wall of calendar — so cap the grid
+         at roughly 3 months and let it scroll internally for the
+         rest. `.starred-layout-d` is the scroll container, so its
+         sticky `.flow-sticky-head` / `.flow-dow` children pin to the
+         top of THIS box as the user scrolls. max-height (not height)
+         means a sparse few-events view just renders short. */
       .starred-layout-d { max-width: 1080px; margin: 0 auto;
-                          padding: 0 6px 24px; }
+                          padding: 0 6px 24px;
+                          max-height: 640px; overflow-y: auto; }
       .flow-sticky-head {
         position: sticky; top: 0; z-index: 6;
         background: var(--card-bg, var(--ha-card-background, #1a1a1a));
