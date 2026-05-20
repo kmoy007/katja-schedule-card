@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.54.0";
+const CARD_VERSION = "0.55.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3062,21 +3062,121 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   _renderCalendarGrid(days, grouped) {
-    const weeks = [], firstDate = new Date(days[0]+"T12:00:00");
+    const firstDate = new Date(days[0]+"T12:00:00");
     const jsDay = firstDate.getDay(), padBefore = jsDay===0?6:jsDay-1;
     const allDays = [];
     for (let i=padBefore;i>0;i--){const d=new Date(firstDate);d.setDate(d.getDate()-i);allDays.push({ds:this._fmt(d),outside:true});}
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
+    const weeks = [];
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>(this._showFlagged||!this._isFlagged(ev)) && !this._isDrive(ev.summary||"")).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");
-    // fr-2026-05-07-d: pending events in the calendar grid get a
-    // dashed border + amber background (no room for a text pill).
-    // The "⚠" prefix in the title flags review state at a glance.
-    const pendingKind = ev._pendingProposal?.kind || "";
-    const pendingCls = pendingKind ? ` cal-pending cal-pending-${pendingKind}` : "";
-    const pendingPrefix = pendingKind ? "⚠ " : "";
-    return`<div class="cal-event${isDrive?" cal-drive":""}${pendingCls}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;}).join("")}</div></div>`;}).join("")}</div>`).join("")}</div>`;
+
+    // Collect distinct multi-day events (dt_end > start). They render
+    // as continuous bars spanning day columns — the way the Starred D
+    // Flow view does — instead of a repeated per-day chip with a
+    // redundant "all day" tag. Take whichever copy is first seen
+    // (start or continuation: a continuation carries _spanStart so we
+    // can still reconstruct the span when the start day is off-view).
+    // Drives + (unless revealed) flagged rows are excluded.
+    const multiDay = [];
+    const seenMd = new Set();
+    for (const dayEvents of Object.values(grouped)) {
+      for (const ev of dayEvents) {
+        if (this._isDrive(ev.summary || "")) continue;
+        if (!this._showFlagged && this._isFlagged(ev)) continue;
+        const end = (ev._dtEnd || "").slice(0, 10);
+        if (!end) continue;
+        const start = ev._isContinuation
+          ? (ev._spanStart || "").slice(0, 10)
+          : (ev.start?.date || ev.start?.dateTime || "").slice(0, 10);
+        if (!start || end <= start) continue;
+        const key = ev._eventId || `${start}|${ev.summary || ""}`;
+        if (seenMd.has(key)) continue;
+        seenMd.add(key);
+        multiDay.push({ ev, start, end });
+      }
+    }
+
+    return `<div class="cal-grid">
+      <div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>
+      ${weeks.map(week => this._renderCalWeek(week, grouped, multiDay)).join("")}
+    </div>`;
+  }
+
+  // One week row of the Overview calendar grid: a multi-day bar strip
+  // on top (continuous spanning bars, greedily track-packed) and the
+  // 7 day cells below (date number + single-day event chips). The
+  // bar strip mirrors the 7-column / 3px-gap geometry of the day grid
+  // so a bar lines up exactly with the columns under it.
+  _renderCalWeek(week, grouped, multiDay) {
+    const weekMon = week[0].ds, weekSun = week[6].ds;
+    const bars = [];
+    for (const md of multiDay) {
+      if (md.end < weekMon || md.start > weekSun) continue;
+      bars.push({
+        ev: md.ev,
+        colStart: Math.max(0, this._daysBetween(weekMon, md.start)),
+        colEnd: Math.min(6, this._daysBetween(weekMon, md.end)),
+        continuesLeft: md.start < weekMon,
+        continuesRight: md.end > weekSun,
+      });
+    }
+    // Greedy track-pack: longest bars first; each takes the lowest
+    // track whose occupied column ranges don't overlap it.
+    bars.sort((a, b) => (b.colEnd - b.colStart) - (a.colEnd - a.colStart));
+    const tracks = [];
+    for (const b of bars) {
+      let t = 0;
+      for (; t < tracks.length; t++) {
+        if (tracks[t].every(([s, e]) => b.colEnd < s || b.colStart > e)) break;
+      }
+      (tracks[t] = tracks[t] || []).push([b.colStart, b.colEnd]);
+      b.track = t;
+    }
+    const barsHtml = bars.map(b => {
+      const idx = (this._renderedEvents || this._events || []).indexOf(b.ev);
+      const cls = ["cal-mdbar"];
+      if (b.continuesLeft) cls.push("continues-left");
+      if (b.continuesRight) cls.push("continues-right");
+      return `<button type="button" class="${cls.join(" ")}" data-event-idx="${idx}" `
+        + `style="grid-column:${b.colStart + 1} / ${b.colEnd + 2}; grid-row:${b.track + 1}; `
+        + `border-left-color:${_esc(b.ev._color || "#888")};" `
+        + `title="${_esc(b.ev.summary || "")}">`
+        + `${b.continuesLeft ? "‹ " : ""}${_esc(b.ev.summary || "")}</button>`;
+    }).join("");
+    const barStrip = tracks.length > 0
+      ? `<div class="cal-week-bars">${barsHtml}</div>`
+      : "";
+
+    const cellsHtml = week.map(({ ds, outside }) => {
+      const isToday = this._isToday(ds);
+      const d = new Date(ds + "T12:00:00");
+      const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+      let cls = "cal-day";
+      if (isToday) cls += " cal-today";
+      if (outside) cls += " cal-outside";
+      if (isWeekend) cls += " cal-weekend";
+      if (ds < this._todayStr() && !outside) cls += " cal-past";
+      // Single-day events only — multi-day events are in the bar
+      // strip above; drives + (unrevealed) flagged rows are hidden.
+      const evts = (grouped[ds] || []).filter(ev => {
+        if (!this._showFlagged && this._isFlagged(ev)) return false;
+        if (this._isDrive(ev.summary || "")) return false;
+        const start = (ev.start?.date || ev.start?.dateTime || "").slice(0, 10);
+        return !((ev._dtEnd || "").slice(0, 10) > start);
+      });
+      const chips = evts.map(ev => {
+        const fl = this._isFlagged(ev);
+        const c = _esc(ev._color || "#888");
+        const pendingKind = ev._pendingProposal?.kind || "";
+        const pendingCls = pendingKind ? ` cal-pending cal-pending-${pendingKind}` : "";
+        const pendingPrefix = pendingKind ? "⚠ " : "";
+        return `<div class="cal-event${pendingCls}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+      }).join("");
+      return `<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${chips}</div></div>`;
+    }).join("");
+
+    return `<div class="cal-week-wrap">${barStrip}<div class="cal-week">${cellsHtml}</div></div>`;
   }
 
   // ====================== STYLES ======================
@@ -3422,7 +3522,29 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px;
                         position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
       .cal-header-cell { font-family: var(--font-display); text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: var(--cal-header-letter-spacing); padding: 4px 0; border-bottom: 1px solid var(--border); }
-      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
+      .cal-week-wrap { margin-bottom: 3px; }
+      .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; align-items: stretch; }
+      /* Multi-day bar strip — same 7-col / 3px-gap geometry as the
+         day grid below, so a bar spanning grid-column N/M lines up
+         exactly with the cells under it. A bar spanning columns also
+         covers the gaps between them, so it reads as one continuous
+         band across the week. */
+      .cal-week-bars { display: grid; grid-template-columns: repeat(7, 1fr);
+        gap: 3px 3px; grid-auto-rows: 17px; margin-bottom: 2px; }
+      .cal-mdbar { align-self: stretch; min-width: 0;
+        padding: 1px 6px; border-radius: var(--radius-xs);
+        border-left: 3px solid #888;
+        background: var(--event-hover); color: var(--text);
+        font-size: 11px; font-weight: 600; line-height: 15px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        text-align: left; cursor: pointer; }
+      /* A bar that started in an earlier week / runs into a later one
+         loses the corner radius (and, on the left, the accent border)
+         on that edge so the segments read as one unbroken span. */
+      .cal-mdbar.continues-left { border-top-left-radius: 0;
+        border-bottom-left-radius: 0; border-left: none; padding-left: 9px; }
+      .cal-mdbar.continues-right { border-top-right-radius: 0;
+        border-bottom-right-radius: 0; }
       /* Cell min-height is 1.5× the density baseline so the Overview
          mini-calendar reads ~50% taller / longer (more room per day
          for event chips). The .cal-grid max-height above scales by
