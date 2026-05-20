@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.46.0";
+const CARD_VERSION = "0.47.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -705,9 +705,14 @@ class KatjaScheduleCard extends HTMLElement {
     const themeName = (config.theme || "dark").toLowerCase();
     this._theme = THEMES[themeName] ? themeName : "dark";
     this._showThemeToggle = !!config.show_theme_toggle;
-    // view config locks the card to a single view: today, tomorrow, calendar, schedule, overview
+    // view config locks the card to a single view: today, tomorrow,
+    // calendar, schedule, overview, dayview, dayview-today, starred.
+    // `starred` makes a dedicated long-range Starred card (the view
+    // carries its own D/E/A/B/C sub-layout picker) — fr-2026-05-20,
+    // the dropdown previously had no Starred lock so Starred was only
+    // reachable via the full-card toggle.
     const locked = (config.view || "").toLowerCase();
-    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today"].includes(locked)) {
+    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today", "starred"].includes(locked)) {
       this._lockedView = locked;
       this._view = locked === "today" || locked === "tomorrow" ? "schedule" : locked;
     } else {
@@ -4023,6 +4028,7 @@ class KatjaScheduleCardEditor extends HTMLElement {
           <option value="tomorrow" ${c.view === "tomorrow" ? "selected" : ""}>Tomorrow only</option>
           <option value="calendar" ${c.view === "calendar" ? "selected" : ""}>Calendar grid only</option>
           <option value="schedule" ${c.view === "schedule" ? "selected" : ""}>Schedule (Cards) only</option>
+          <option value="starred" ${c.view === "starred" ? "selected" : ""}>Starred only (6-month long-range)</option>
         </select>
       </div>
 
