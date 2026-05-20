@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.50.0";
+const CARD_VERSION = "0.51.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3172,13 +3172,25 @@ class KatjaScheduleCard extends HTMLElement {
         border-left: 6px solid var(--accent); background: var(--accent-bg);
         box-shadow: inset 0 3px 0 0 var(--accent),
                     inset 0 0 30px -10px var(--accent); }
-      /* Today panel inner split: narrow hour-axis | schedule list. */
-      .overview-today-split { display: grid; grid-template-columns: 96px 1fr; gap: 0; }
+      /* Today panel inner split: hour-axis | schedule list. The
+         hour-axis column is 240px (2.5× the original 96px) so event
+         blocks on the time grid are wide enough to read their
+         titles, not just show as color bars. */
+      .overview-today-split { display: grid; grid-template-columns: 240px 1fr; gap: 0; }
       .overview-today-grid { border-right: 1px solid var(--border); overflow: hidden; }
       @media (max-width: 720px) {
         .overview-today-split { grid-template-columns: 1fr; }
         .overview-today-grid { display: none; }
       }
+      /* Tomorrow panel reads a notch smaller than today — today is
+         the priority surface, tomorrow is the at-a-glance lookahead.
+         Scoped to the Overview's tomorrow column (last .overview-col)
+         and made specific enough to win over the .day.is-tomorrow
+         header rule. */
+      .overview-top .overview-col:last-child .day-header { font-size: calc(var(--day-header-size) - 1px); }
+      .overview-top .overview-col:last-child .event-summary { font-size: calc(var(--event-summary-size) - 2px); }
+      .overview-top .overview-col:last-child .event-time { font-size: calc(var(--event-time-size) - 2px); }
+      .overview-top .overview-col:last-child .event-location { font-size: calc(var(--event-time-size) - 2px); }
       /* Day View — two rows × two columns. Each row has list (left)
          and hour-axis (right). Hour-axis hidden on narrow displays
          (HA dashboards on phones) since the wall-display is the
