@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.49.0";
+const CARD_VERSION = "0.50.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2289,7 +2289,22 @@ class KatjaScheduleCard extends HTMLElement {
 
   _renderOverview(grouped) {
     const todayDs = this._todayStr(), tomorrowDs = this._tomorrowStr();
-    return `<div class="overview-top"><div class="overview-col"${this._panelStyle("today")}>${this._renderDay(todayDs, grouped[todayDs]||[])}</div><div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div></div><div class="overview-divider"></div><div${this._panelStyle("calendar")}>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}</div>`;
+    const todayEvents = grouped[todayDs] || [];
+    // The today panel pairs a narrow hour-axis (a compact "when is
+    // stuff today" time grid) on the LEFT with the schedule list on
+    // the right. The hour-axis hides on narrow viewports — same as
+    // Day View — so phones keep the full-width list.
+    return `<div class="overview-top">
+      <div class="overview-col"${this._panelStyle("today")}>
+        <div class="overview-today-split">
+          <div class="overview-today-grid">${this._renderDayHourAxis(todayDs, todayEvents)}</div>
+          <div class="overview-today-list">${this._renderDay(todayDs, todayEvents)}</div>
+        </div>
+      </div>
+      <div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div>
+    </div>
+    <div class="overview-divider"></div>
+    <div${this._panelStyle("calendar")}>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}</div>`;
   }
 
   // Day View — 4-cell layout matching the web template's dayview mode.
@@ -2753,16 +2768,14 @@ class KatjaScheduleCard extends HTMLElement {
 
   _renderStarredView() {
     const evs = this._starredEvents || [];
-    const sub = this._starredSubLayout || "a";
+    // Starred is always the D Flow layout — the contiguous 6-month
+    // grid. The D/E/A/B/C sub-layout selector was removed
+    // (fr-2026-05-20): D is the one that gets used, the picker was
+    // just clutter on a wall display.
     const header = `
       <div class="starred-head">
         <div class="starred-head-title"><span class="s-star">★</span> Starred · next 6 months
           ${this._starredFetched ? `<span class="starred-count">· ${evs.length} event${evs.length===1?"":"s"}</span>` : ""}
-        </div>
-        <div class="starred-pick">
-          ${[["d","D Flow"],["e","E M3"],["a","A Agenda"],["b","B Grid"],["c","C Timeline"]].map(([k,l]) =>
-            `<button class="s-pick-btn${sub===k?" active":""}" data-starred-sub="${k}">${l}</button>`
-          ).join("")}
         </div>
       </div>`;
     let pane = "";
@@ -2776,16 +2789,8 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="s-empty-title">No starred events in the next 6 months</div>
         <div class="s-empty-hint">Star events from the web app to populate this view.</div>
       </div>`;
-    } else if (sub === "a") {
-      pane = this._renderStarredAgenda(evs);
-    } else if (sub === "b") {
-      pane = this._renderStarredGridSplit(evs);
-    } else if (sub === "c") {
-      pane = this._renderStarredTimeline(evs);
-    } else if (sub === "d") {
-      pane = this._renderStarredFlow(evs);
     } else {
-      pane = this._renderStarredFlow(evs, "m3");
+      pane = this._renderStarredFlow(evs);
     }
     return `<div class="starred-wrap">${header}<div class="starred-pane">${pane}</div></div>`;
   }
@@ -3160,7 +3165,20 @@ class KatjaScheduleCard extends HTMLElement {
         color: #FF6B6B; border-color: #FF6B6B; opacity: 1; }
       .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: var(--overview-min); }
-      .overview-col:first-child { border-right: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--accent-bg); }
+      /* Today panel — clearly highlighted: a thick accent left border,
+         a 3px accent top bar + soft inner glow (both via inset
+         box-shadow so there's no layout shift vs the tomorrow col). */
+      .overview-col:first-child { border-right: 1px solid var(--border);
+        border-left: 6px solid var(--accent); background: var(--accent-bg);
+        box-shadow: inset 0 3px 0 0 var(--accent),
+                    inset 0 0 30px -10px var(--accent); }
+      /* Today panel inner split: narrow hour-axis | schedule list. */
+      .overview-today-split { display: grid; grid-template-columns: 96px 1fr; gap: 0; }
+      .overview-today-grid { border-right: 1px solid var(--border); overflow: hidden; }
+      @media (max-width: 720px) {
+        .overview-today-split { grid-template-columns: 1fr; }
+        .overview-today-grid { display: none; }
+      }
       /* Day View — two rows × two columns. Each row has list (left)
          and hour-axis (right). Hour-axis hidden on narrow displays
          (HA dashboards on phones) since the wall-display is the
@@ -3313,13 +3331,18 @@ class KatjaScheduleCard extends HTMLElement {
          min-height once a few events fan into them. Header row stays
          sticky so day-of-week labels remain visible during scroll. */
       .cal-grid { padding: var(--cal-pad);
-                  max-height: calc(var(--cal-min) * 6 + 60px);
+                  max-height: calc(var(--cal-min) * 1.5 * 6 + 60px);
                   overflow-y: auto; }
       .cal-header-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px;
                         position: sticky; top: 0; background: var(--card-bg); z-index: 1; }
       .cal-header-cell { font-family: var(--font-display); text-align: center; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: var(--cal-header-letter-spacing); padding: 4px 0; border-bottom: 1px solid var(--border); }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 3px; align-items: stretch; }
-      .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: var(--cal-min); overflow: hidden; }
+      /* Cell min-height is 1.5× the density baseline so the Overview
+         mini-calendar reads ~50% taller / longer (more room per day
+         for event chips). The .cal-grid max-height above scales by
+         the same 1.5× so the same number of weeks show before
+         scrolling. */
+      .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: calc(var(--cal-min) * 1.5); overflow: hidden; }
       .cal-today { background: var(--cal-today-bg); outline: 2px solid var(--accent); outline-offset: -2px; }
       .cal-outside { opacity: 0.25; }
       .cal-past { opacity: 0.35; }
