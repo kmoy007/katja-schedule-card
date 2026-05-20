@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.53.0";
+const CARD_VERSION = "0.54.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3069,7 +3069,7 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of days) allDays.push({ds,outside:false});
     while(allDays.length%7!==0){const last=new Date(allDays[allDays.length-1].ds+"T12:00:00");last.setDate(last.getDate()+1);allDays.push({ds:this._fmt(last),outside:true});}
     for(let i=0;i<allDays.length;i+=7)weeks.push(allDays.slice(i,i+7));
-    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>this._showFlagged||!this._isFlagged(ev)).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");
+    return `<div class="cal-grid"><div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>${weeks.map(week=>`<div class="cal-week">${week.map(({ds,outside})=>{const isToday=this._isToday(ds),d=new Date(ds+"T12:00:00"),evts=grouped[ds]||[],isWeekend=d.getDay()===0||d.getDay()===6;let cls="cal-day";if(isToday)cls+=" cal-today";if(outside)cls+=" cal-outside";if(isWeekend)cls+=" cal-weekend";if(ds<this._todayStr()&&!outside)cls+=" cal-past";return`<div class="${cls}" data-day-date="${_esc(ds)}" style="cursor:pointer"><div class="cal-date">${d.getDate()}</div><div class="cal-events">${evts.filter(ev=>(this._showFlagged||!this._isFlagged(ev)) && !this._isDrive(ev.summary||"")).map(ev=>{const isDrive=this._isDrive(ev.summary||"");const fl=this._isFlagged(ev);const c=_esc(ev._color||"#888");
     // fr-2026-05-07-d: pending events in the calendar grid get a
     // dashed border + amber background (no room for a text pill).
     // The "⚠" prefix in the title flags review state at a glance.
@@ -3251,12 +3251,11 @@ class KatjaScheduleCard extends HTMLElement {
       .overview-top .overview-col:last-child .event-time { font-size: calc(var(--event-time-size) - 2px); }
       .overview-top .overview-col:last-child .event-location { font-size: calc(var(--event-time-size) - 2px); }
       /* Overview: Today / Tomorrow labels promoted into the card's top
-         bar (fr-2026-05-20). The day-labels grid mirrors .overview-top's
-         3fr 2fr split; the meta block (version / pending pill) is
-         pinned far-right so it can't push the labels out of column
-         alignment. */
-      .header-overview { position: relative; }
-      .header-overview .meta { position: absolute; top: 50%; right: var(--card-pad); transform: translateY(-50%); }
+         bar (fr-2026-05-20). The day-labels grid takes the available
+         width (flex:1); the meta block (version / pending pill) sits
+         after it in normal flow — NOT absolutely positioned, which
+         was overlapping the date text. The grid splits 3fr 2fr to
+         roughly track .overview-top's columns. */
       .overview-header-days { flex: 1; min-width: 0; display: grid; grid-template-columns: 3fr 2fr; gap: 0; }
       .ovh-day { display: flex; align-items: center; gap: 8px; min-width: 0;
         font-family: var(--font-display); font-weight: var(--day-header-weight);
