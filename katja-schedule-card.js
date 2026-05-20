@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.52.0";
+const CARD_VERSION = "0.53.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2545,12 +2545,40 @@ class KatjaScheduleCard extends HTMLElement {
     }
     return h;
   }
+  _isDarkTheme() {
+    // Perceived-luminance test on the resolved theme's card background.
+    // Non-default themes carry a hex cardBg; the default theme uses an
+    // HA CSS var we can't read here — assume dark (most HA dashboards
+    // are, and the user's screenshot card is).
+    const bg = (this._resolveTheme() || {}).cardBg || "";
+    const m = bg.match(/#([0-9a-fA-F]{6})/);
+    if (!m) return true;
+    const n = parseInt(m[1], 16);
+    const lum = 0.2126 * ((n >> 16) & 255)
+              + 0.7152 * ((n >> 8) & 255)
+              + 0.0722 * (n & 255);
+    return lum < 128;
+  }
   _flowColors(what) {
-    // Stable HSL pastel from hash(what) — recurring events keep the
-    // same color across renders so the eye can follow a multi-week
-    // series.
+    // Stable hue from hash(what) — recurring events keep the same
+    // color across renders so the eye can follow a multi-week series.
+    // fr-2026-05-20: on dark themes the old 92%-lightness pastels
+    // glared against the dark card. Dark themes now get a muted
+    // dark-tinted fill with a light-tinted label; light themes keep
+    // the pastel + dark label. `text` is the chip's text color.
     const hue = this._flowHash(what || "?") % 360;
-    return { bg: `hsl(${hue} 70% 92%)`, edge: `hsl(${hue} 40% 60%)` };
+    if (this._isDarkTheme()) {
+      return {
+        bg: `hsl(${hue} 40% 20%)`,
+        edge: `hsl(${hue} 45% 42%)`,
+        text: `hsl(${hue} 55% 82%)`,
+      };
+    }
+    return {
+      bg: `hsl(${hue} 70% 92%)`,
+      edge: `hsl(${hue} 40% 55%)`,
+      text: "#1F1F1F",
+    };
   }
   _coalesceConsecutive(events) {
     // bug-20260515-161604 parity: a multi-day event that arrives as N
@@ -2716,14 +2744,14 @@ class KatjaScheduleCard extends HTMLElement {
         html += `<div class="${cls.join(" ")}" style="grid-column:${d + 2};"${todayAttr}>${inner}</div>`;
       }
       for (const it of w.items) {
-        const { bg, edge } = this._flowColors(it.ev.what);
+        const { bg, edge, text } = this._flowColors(it.ev.what);
         const cls = ["flow-event"];
         if (it.continuesLeft) cls.push("is-continuation");
         if (it.continuesRight) cls.push("is-continued");
         const titleText = `${it.ev.what || ""} · ${it.ev.date || ""}${it.ev.time ? " " + it.ev.time : ""}`;
         html += `
           <button type="button" class="${cls.join(" ")}"
-                  style="--c:${bg};--ce:${edge};--col-start:${it.colStart + 2};--col-end:${it.colEnd + 3};--track:${it.track + 2};"
+                  style="--c:${bg};--ce:${edge};--ct:${text};--col-start:${it.colStart + 2};--col-end:${it.colEnd + 3};--track:${it.track + 2};"
                   title="${_esc(titleText)}"
                   data-flow-event-id="${_esc(it.ev.event_id || "")}"
                   data-flow-date="${_esc(it.ev.date || "")}"
@@ -3872,7 +3900,9 @@ class KatjaScheduleCard extends HTMLElement {
         padding: 0 7px;
         border-radius: 4px;
         background: var(--c, #E0D5B0);
-        color: #1F1F1F;
+        /* --ct (chip text) is theme-aware: dark light-tinted on dark
+           themes, near-black on light themes (set by _flowColors). */
+        color: var(--ct, #1F1F1F);
         font-size: 11.5px; font-weight: 600;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         border: 1px solid var(--ce, #B0A578);
