@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.56.0";
+const CARD_VERSION = "0.57.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2580,6 +2580,28 @@ class KatjaScheduleCard extends HTMLElement {
       text: "#1F1F1F",
     };
   }
+  // Very subtle per-event background tint for the calendar-grid
+  // multi-day bars — just enough hue separation to tell two bars
+  // apart, not a loud fill. Hash-stable like _flowColors.
+  _flowSubtle(what) {
+    const hue = this._flowHash(what || "?") % 360;
+    return this._isDarkTheme()
+      ? `hsl(${hue} 26% 17%)`
+      : `hsl(${hue} 45% 94%)`;
+  }
+  // Single source of truth for "is this event a fanned copy of a
+  // multi-day span?" — used so callers stop re-deriving it as
+  // `_dtEnd > date`, which is correct for the start + middle days
+  // but FALSE on the last day (where _dtEnd === that day's date).
+  // That off-by-one is what kept leaking a multi-day event's final
+  // day through as a duplicate single-day chip. _isContinuation
+  // (set by _fanOutMultiDay on every non-start copy) is the
+  // reliable flag; the start copy is caught by the dt_end test.
+  _isMultiDayCopy(ev) {
+    if (ev._isContinuation) return true;
+    const start = (ev.start?.date || ev.start?.dateTime || "").slice(0, 10);
+    return !!(ev._dtEnd && ev._dtEnd.slice(0, 10) > start);
+  }
   _coalesceConsecutive(events) {
     // bug-20260515-161604 parity: a multi-day event that arrives as N
     // back-to-back per-day rows (e.g. a calendar that emits one entry
@@ -3155,9 +3177,12 @@ class KatjaScheduleCard extends HTMLElement {
       const cls = ["cal-mdbar"];
       if (b.continuesLeft) cls.push("continues-left");
       if (b.continuesRight) cls.push("continues-right");
+      // Subtle per-event hue tint so two adjacent bars are
+      // distinguishable; left accent stays the person color.
       return `<button type="button" class="${cls.join(" ")}" data-event-idx="${idx}" `
         + `style="grid-column:${b.colStart + 1} / ${b.colEnd + 2}; grid-row:${b.track + 1}; `
-        + `border-left-color:${_esc(b.ev._color || "#888")};" `
+        + `border-left-color:${_esc(b.ev._color || "#888")}; `
+        + `background:${this._flowSubtle(b.ev.summary || "")};" `
         + `title="${_esc(b.ev.summary || "")}">`
         + `${b.continuesLeft ? "‹ " : ""}${_esc(b.ev.summary || "")}</button>`;
     }).join("");
@@ -3171,14 +3196,17 @@ class KatjaScheduleCard extends HTMLElement {
       return `<div class="cal-datecell${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><span class="cal-date">${d.getDate()}</span></div>`;
     }).join("");
 
-    // --- single-day chip cells (multi-day events are in the bar
-    // strip above; drives + unrevealed flagged rows are hidden) ---
+    // --- single-day chip cells. Multi-day events render ONLY as bars
+    // above — _isMultiDayCopy excludes every fanned copy (start,
+    // middle AND last day; the last day was leaking through before
+    // because there _dtEnd === the day's date). Drives + unrevealed
+    // flagged rows are hidden. ---
     const cellsHtml = week.map(w => {
       const evts = (grouped[w.ds] || []).filter(ev => {
         if (!this._showFlagged && this._isFlagged(ev)) return false;
         if (this._isDrive(ev.summary || "")) return false;
-        const start = (ev.start?.date || ev.start?.dateTime || "").slice(0, 10);
-        return !((ev._dtEnd || "").slice(0, 10) > start);
+        if (this._isMultiDayCopy(ev)) return false;
+        return true;
       });
       const chips = evts.map(ev => {
         const fl = this._isFlagged(ev);
@@ -3186,15 +3214,26 @@ class KatjaScheduleCard extends HTMLElement {
         const pendingKind = ev._pendingProposal?.kind || "";
         const pendingCls = pendingKind ? ` cal-pending cal-pending-${pendingKind}` : "";
         const pendingPrefix = pendingKind ? "⚠ " : "";
-        return `<div class="cal-event${pendingCls}" style="border-left:3px solid ${c}${fl?";opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+        // Single-day events are a person-colored bullet + text — no
+        // filled background box (fr-2026-05-20). flagged → struck out.
+        return `<div class="cal-event${pendingCls}" style="${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
       return `<div class="cal-day${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><div class="cal-events">${chips}</div></div>`;
     }).join("");
+
+    // --- today column box: one orange outline around the whole
+    // today column — date cell, bar strip slice and chip cell — set
+    // as a grid item spanning every sub-row. ---
+    const todayIdx = week.findIndex(w => this._isToday(w.ds));
+    const todayBox = todayIdx >= 0
+      ? `<div class="cal-today-col" style="grid-column:${todayIdx + 1};"></div>`
+      : "";
 
     return `<div class="cal-week-wrap">`
       + `<div class="cal-week cal-week-dates">${dateRow}</div>`
       + barStrip
       + `<div class="cal-week">${cellsHtml}</div>`
+      + todayBox
       + `</div>`;
   }
 
@@ -3544,8 +3583,19 @@ class KatjaScheduleCard extends HTMLElement {
       /* Strong white-ish separator line between weeks (fr-2026-05-20)
          — the tinted cell backgrounds alone weren't enough to break
          the weeks apart at a glance. */
-      .cal-week-wrap { margin-bottom: 4px; padding-top: 4px;
+      /* The week wrapper is itself a 7-col grid so the .cal-today-col
+         marker can be one grid item spanning every sub-row (dates +
+         bar strip + chip cells) — giving today a single continuous
+         outline box, not three stacked ones. The date row / bar strip
+         / chip grid each span all 7 columns. */
+      .cal-week-wrap { display: grid; grid-template-columns: repeat(7, 1fr);
+        column-gap: 3px; margin-bottom: 4px; padding-top: 4px;
         border-top: 2px solid rgba(255,255,255,0.30); }
+      .cal-week-dates, .cal-week-bars, .cal-week { grid-column: 1 / -1; }
+      .cal-today-col { grid-row: 1 / -1; align-self: stretch;
+        outline: 2px solid var(--accent); outline-offset: -1px;
+        border-radius: var(--radius-xs); background: var(--cal-today-bg);
+        pointer-events: none; }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; align-items: stretch; }
       /* Date-number row — sits ABOVE the multi-day bar strip so the
          bars clearly belong to the week beneath their dates. */
@@ -3581,14 +3631,18 @@ class KatjaScheduleCard extends HTMLElement {
          the same 1.5× so the same number of weeks show before
          scrolling. */
       .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: calc(var(--cal-min) * 1.5); overflow: hidden; }
-      .cal-today { background: var(--cal-today-bg); outline: 2px solid var(--accent); outline-offset: -2px; }
+      /* Today's box is drawn by .cal-today-col (one outline spanning
+         the whole column); .cal-today now only tints the date digit. */
       .cal-outside { opacity: 0.25; }
       .cal-past { opacity: 0.35; }
       .cal-weekend { background: var(--weekend-bg); }
-      .cal-date { font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
+      .cal-date { font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--muted); }
       .cal-today .cal-date { color: var(--accent); font-size: 15px; }
       .cal-events { display: flex; flex-direction: column; gap: 1px; }
-      .cal-event { padding: 2px 4px; border-radius: var(--radius-xs); background: var(--event-hover); font-size: 11px; line-height: 1.25; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 3px; align-items: baseline; }
+      /* Single-day events: a person-colored bullet + text, no filled
+         background box (fr-2026-05-20). */
+      .cal-event { padding: 1px 2px; font-size: 11px; line-height: 1.3; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: flex; gap: 4px; align-items: center; }
+      .cal-event-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
       .cal-event-time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
       .cal-event-text { overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-size: calc(11px + var(--katja-font-adjust, 0px)); }
       .cal-drive { opacity: 0.5; font-style: italic; }
