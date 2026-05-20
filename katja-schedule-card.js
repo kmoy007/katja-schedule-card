@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.51.0";
+const CARD_VERSION = "0.52.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1700,11 +1700,28 @@ class KatjaScheduleCard extends HTMLElement {
     // card refetches immediately so it's a confirmation toast, not
     // a 4.5s reload countdown.
     const toast = this._actionToast ? `<div class="action-toast" data-key="${this._actionToast.key}">${_esc(this._actionToast.message)}</div>` : "";
+    // fr-2026-05-20: on the Overview, the card's top bar shows the
+    // Today / Tomorrow day labels (each over its column) instead of a
+    // static "Family Schedule" title — the day context belongs in the
+    // most prominent bar. The in-panel day headers are skipped there
+    // (see _renderOverview → _renderDay headerInBar). Other views keep
+    // the configured title.
+    const isOverviewHdr = !locked && this._view === "overview";
+    let titleHtml;
+    if (isOverviewHdr) {
+      const hToday = this._todayStr(), hTomorrow = this._tomorrowStr();
+      titleHtml = `<div class="overview-header-days">
+        <div class="ovh-day ovh-today">${this._dayHeaderInner(hToday, grouped[hToday] || [])}</div>
+        <div class="ovh-day ovh-tomorrow">${this._dayHeaderInner(hTomorrow, grouped[hTomorrow] || [])}</div>
+      </div>`;
+    } else {
+      titleHtml = `<span class="title">${_esc(this._config.title || "Family Schedule")}</span>`;
+    }
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
       <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
-        ${showHeader ? `<div class="header">
-          <span class="title">${_esc(this._config.title || "Family Schedule")}</span>
+        ${showHeader ? `<div class="header${isOverviewHdr ? " header-overview" : ""}">
+          ${titleHtml}
           ${showToggle ? `<div class="view-toggle">
             ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"],["starred","★ Starred"]].map(([v,label]) =>
               `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${label}</button>`
@@ -2298,10 +2315,10 @@ class KatjaScheduleCard extends HTMLElement {
       <div class="overview-col"${this._panelStyle("today")}>
         <div class="overview-today-split">
           <div class="overview-today-grid">${this._renderDayHourAxis(todayDs, todayEvents)}</div>
-          <div class="overview-today-list">${this._renderDay(todayDs, todayEvents)}</div>
+          <div class="overview-today-list">${this._renderDay(todayDs, todayEvents, {headerInBar: true})}</div>
         </div>
       </div>
-      <div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[])}</div>
+      <div class="overview-col"${this._panelStyle("tomorrow")}>${this._renderDay(tomorrowDs, grouped[tomorrowDs]||[], {headerInBar: true})}</div>
     </div>
     <div class="overview-divider"></div>
     <div${this._panelStyle("calendar")}>${this._renderCalendarGrid(this._getMonAlignedDays(), grouped)}</div>`;
@@ -2939,21 +2956,35 @@ class KatjaScheduleCard extends HTMLElement {
     return { y: parseInt(ys, 10), m: parseInt(ms, 10), d: parseInt(ds, 10) };
   }
 
-  _renderDay(ds, events) {
-    const isToday = this._isToday(ds), isTomorrow = this._isTomorrow(ds);
-    const d = new Date(ds+"T12:00:00"), isWeekend = d.getDay()===0||d.getDay()===6;
-    let cls = "day"; if (isToday) cls+=" is-today"; if (isTomorrow) cls+=" is-tomorrow"; if (isWeekend) cls+=" weekend";
-    // fr-2026-05-11-a / -b: per-day 🗑 chip with the hidden-count
-    // label, shown only when this day actually has cancelled/skipped/
-    // rule-hidden rows. Days with nothing to reveal don't carry the
-    // chip (Ken's screenshot showed empty header — fr-2026-05-11-b
-    // adds the count so the affordance is visible AND useful).
+  // Inner content of a day-header: colored dot, formatted date label,
+  // an event count (non-today only) and the per-day 🗑 flagged-toggle
+  // chip. fr-2026-05-11-a/-b: the chip shows only when the day has
+  // cancelled/skipped/rule-hidden rows. Shared by the in-panel
+  // `.day-header` and — in the Overview — the day labels promoted
+  // into the card's top bar (fr-2026-05-20).
+  _dayHeaderInner(ds, events) {
+    const isToday = this._isToday(ds);
     const dayActive = this._dayShowsFlagged(ds);
     const flaggedCount = this._flaggedCountForDay(events);
     const dayBtn = flaggedCount > 0
       ? `<button class="day-flagged-btn${dayActive?" active":""}" data-day-flagged="${_esc(ds)}" title="${dayActive?"Hide":"Show"} ${flaggedCount} cancelled/skipped on this day">🗑 ${flaggedCount}</button>`
       : "";
-    return `<div class="${cls}"><div class="day-header"><span class="day-dot"></span>${this._formatDateHeader(ds)}${events.length>0&&!isToday?`<span class="event-count">${events.length} event${events.length!==1?"s":""}</span>`:""}${dayBtn}</div><div class="events">${events.length===0?'<div class="no-events">No events</div>':events.map(ev=>this._renderEvent(ev, ds)).join("")}</div></div>`;
+    const count = events.length > 0 && !isToday
+      ? `<span class="event-count">${events.length} event${events.length!==1?"s":""}</span>`
+      : "";
+    return `<span class="day-dot"></span>${this._formatDateHeader(ds)}${count}${dayBtn}`;
+  }
+
+  _renderDay(ds, events, opts = {}) {
+    const isToday = this._isToday(ds), isTomorrow = this._isTomorrow(ds);
+    const d = new Date(ds+"T12:00:00"), isWeekend = d.getDay()===0||d.getDay()===6;
+    let cls = "day"; if (isToday) cls+=" is-today"; if (isTomorrow) cls+=" is-tomorrow"; if (isWeekend) cls+=" weekend";
+    // Overview promotes the day label into the card's top bar, so the
+    // in-panel header is skipped there (opts.headerInBar).
+    const header = opts.headerInBar
+      ? ""
+      : `<div class="day-header">${this._dayHeaderInner(ds, events)}</div>`;
+    return `<div class="${cls}">${header}<div class="events">${events.length===0?'<div class="no-events">No events</div>':events.map(ev=>this._renderEvent(ev, ds)).join("")}</div></div>`;
   }
 
   _renderEvent(ev, dayDs) {
@@ -3191,6 +3222,22 @@ class KatjaScheduleCard extends HTMLElement {
       .overview-top .overview-col:last-child .event-summary { font-size: calc(var(--event-summary-size) - 2px); }
       .overview-top .overview-col:last-child .event-time { font-size: calc(var(--event-time-size) - 2px); }
       .overview-top .overview-col:last-child .event-location { font-size: calc(var(--event-time-size) - 2px); }
+      /* Overview: Today / Tomorrow labels promoted into the card's top
+         bar (fr-2026-05-20). The day-labels grid mirrors .overview-top's
+         3fr 2fr split; the meta block (version / pending pill) is
+         pinned far-right so it can't push the labels out of column
+         alignment. */
+      .header-overview { position: relative; }
+      .header-overview .meta { position: absolute; top: 50%; right: var(--card-pad); transform: translateY(-50%); }
+      .overview-header-days { flex: 1; min-width: 0; display: grid; grid-template-columns: 3fr 2fr; gap: 0; }
+      .ovh-day { display: flex; align-items: center; gap: 8px; min-width: 0;
+        font-family: var(--font-display); font-weight: var(--day-header-weight);
+        font-size: var(--today-header-size); color: var(--header-text);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ovh-day .day-dot { width: 10px; height: 10px; border-radius: 50%;
+        background: var(--accent); flex-shrink: 0; }
+      .ovh-tomorrow { font-size: var(--day-header-size); color: var(--text-soft); }
+      .ovh-tomorrow .day-dot { background: var(--muted); }
       /* Day View — two rows × two columns. Each row has list (left)
          and hour-axis (right). Hour-axis hidden on narrow displays
          (HA dashboards on phones) since the wall-display is the
