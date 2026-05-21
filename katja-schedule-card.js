@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.61.0";
+const CARD_VERSION = "0.62.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2693,24 +2693,51 @@ class KatjaScheduleCard extends HTMLElement {
               + 0.0722 * (n & 255);
     return lum < 128;
   }
+  // Hue (0-360) of the active theme's accent, or null when it can't be
+  // derived — a CSS-var accent (the `none` theme) or a grey accent with
+  // no hue (mono). Lets the Starred bars sit in a themed color family
+  // instead of spanning the whole hue wheel (fr-2026-05-21).
+  _accentHue() {
+    const accent = ((this._resolveTheme() || {}).accent || "").trim();
+    const m = /^#?([0-9a-fA-F]{6})$/.exec(accent);
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    const r = ((n >> 16) & 255) / 255;
+    const g = ((n >> 8) & 255) / 255;
+    const b = (n & 255) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    if (d < 0.001) return null;  // grey accent — no meaningful hue
+    let h;
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    return ((h * 60) % 360 + 360) % 360;
+  }
   _flowColors(what) {
-    // Stable hue from hash(what) — recurring events keep the same
+    // Stable hash from the event title — recurring events keep the same
     // color across renders so the eye can follow a multi-week series.
-    // fr-2026-05-20: on dark themes the old 92%-lightness pastels
-    // glared against the dark card. Dark themes now get a muted
-    // dark-tinted fill with a light-tinted label; light themes keep
-    // the pastel + dark label. `text` is the chip's text color.
-    const hue = this._flowHash(what || "?") % 360;
+    // fr-2026-05-21: the hue is anchored to the active theme's accent
+    // (a +/-35deg band) so the whole Starred grid reads as one themed
+    // family; per-event lightness varies independently so a screenful
+    // of events stays distinct inside that band. Themes with no
+    // derivable accent hue (`none`, `mono`) fall back to the full wheel.
+    // `text` is the chip's text color.
+    const h = this._flowHash(what || "?");
+    const accentHue = this._accentHue();
+    const hue = accentHue != null
+      ? (accentHue + (h % 71) - 35 + 360) % 360
+      : h % 360;
+    const lShift = Math.floor(h / 71) % 11;  // 0..10, independent of hue
     if (this._isDarkTheme()) {
       return {
-        bg: `hsl(${hue} 40% 20%)`,
-        edge: `hsl(${hue} 45% 42%)`,
+        bg: `hsl(${hue} 38% ${16 + lShift}%)`,
+        edge: `hsl(${hue} 46% ${40 + lShift}%)`,
         text: `hsl(${hue} 55% 82%)`,
       };
     }
     return {
-      bg: `hsl(${hue} 70% 92%)`,
-      edge: `hsl(${hue} 40% 55%)`,
+      bg: `hsl(${hue} 68% ${90 - lShift}%)`,
+      edge: `hsl(${hue} 42% 55%)`,
       text: "#1F1F1F",
     };
   }
