@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.60.0";
+const CARD_VERSION = "0.61.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -610,6 +610,13 @@ const ZOOM_ICON = '<svg class="zoom-ico" viewBox="0 0 24 24" width="16" height="
 // down so the viewer knows it is about to close.
 const ZOOM_TIMEOUT_MS = 60000;
 
+// fr-2026-05-21: circular-arrow refresh glyph for the dashboard reload
+// button. Inline SVG (like ZOOM_ICON) so it renders identically on
+// every HA dashboard font stack.
+const RELOAD_ICON = '<svg class="reload-ico" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">'
+  + '<path d="M23 4v6h-6M20.49 15a9 9 0 1 1-2.12-9.36L23 10" fill="none" stroke="currentColor" '
+  + 'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 class KatjaScheduleCard extends HTMLElement {
   connectedCallback() {
     // Minute-ticker for the Day View NOW line. HA re-renders the card
@@ -659,6 +666,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._zoomTick = null;
     this._zoomDeadline = null;
     this._theme = "dark";
+    this._defaultTheme = "dark";
     this._showFlagged = false;
     // fr-2026-05-11-a: per-day override of the global show-flagged
     // state. Keyed by day-iso ("YYYY-MM-DD"). When global is OFF, a
@@ -726,6 +734,9 @@ class KatjaScheduleCard extends HTMLElement {
     // Theme
     const themeName = (config.theme || "dark").toLowerCase();
     this._theme = THEMES[themeName] ? themeName : "dark";
+    // Remember the configured theme so the reset button can return to
+    // it after the user has cycled away (fr-2026-05-21).
+    this._defaultTheme = this._theme;
     this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view: today, tomorrow,
     // calendar, schedule, overview, dayview, dayview-today, starred.
@@ -1313,6 +1324,12 @@ class KatjaScheduleCard extends HTMLElement {
     this._theme = keys[(idx + 1) % keys.length];
     this._render();
   }
+  // Simple one-click return to the configured theme — no cycling all
+  // the way around the THEMES list to get home (fr-2026-05-21).
+  _resetTheme() {
+    this._theme = THEMES[this._defaultTheme] ? this._defaultTheme : "dark";
+    this._render();
+  }
   _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._render(); }
   _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
@@ -1746,6 +1763,12 @@ class KatjaScheduleCard extends HTMLElement {
     // the pill so the user has a way back to Overview from each.
     const showToggle = !locked && this._view !== "overview";
     const showThemeBtn = this._showThemeToggle;
+    // fr-2026-05-21: reset-to-default button, shown next to the theme
+    // toggle only once the user has cycled away from the configured theme.
+    const themeResetBtnHTML = (this._showThemeToggle
+        && this._theme !== (this._defaultTheme || "dark"))
+      ? `<button class="theme-reset-btn" id="theme-reset" title="Reset theme to ${_esc(THEMES[this._defaultTheme]?.name || "default")}">↺</button>`
+      : "";
     // fr-2026-05-11-b: the global 🗑 only makes sense on the Calendar
     // view, where rows aren't grouped by day so a per-day chip would be
     // out of place. Overview + Schedule rely on the per-day chip Ken
@@ -1812,12 +1835,16 @@ class KatjaScheduleCard extends HTMLElement {
             ${syncText ? `<span>Synced ${_esc(syncText)}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${_esc(buildInfo)}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
+            ${themeResetBtnHTML}
             ${globalFlaggedBtnHTML}
+            <button class="reload-btn" title="Reload the dashboard">${RELOAD_ICON}</button>
           </div>
         </div>` : ""}
         ${!showHeader ? `<div class="floating-theme">
           ${globalFlaggedBtnHTML}
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
+          ${themeResetBtnHTML}
+          <button class="reload-btn" title="Reload the dashboard">${RELOAD_ICON}</button>
         </div>` : ""}
         ${body}${this._renderZoomOverlay(grouped)}${modal}${toast}
       </div></ha-card>`;
@@ -1875,6 +1902,10 @@ class KatjaScheduleCard extends HTMLElement {
       zoomOverlay.addEventListener("scroll", rearm, true);
     }
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
+    this.shadowRoot.querySelector("#theme-reset")?.addEventListener("click", () => this._resetTheme());
+    // fr-2026-05-21: force a full page reload of the HA dashboard.
+    this.shadowRoot.querySelectorAll(".reload-btn").forEach(btn =>
+      btn.addEventListener("click", () => window.location.reload()));
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
     // fr-2026-05-11-a: per-day 🗑 buttons. Each carries data-day-flagged
     // = the day-iso it controls.
@@ -3514,6 +3545,22 @@ class KatjaScheduleCard extends HTMLElement {
         cursor: pointer; padding: 4px 10px; border-radius: var(--radius-sm); font-family: var(--font); font-size: 11px; font-weight: 600;
         transition: all 0.15s; }
       .theme-btn:hover { color: var(--header-text); border-color: var(--accent); }
+      /* fr-2026-05-21: reset-theme button — one click back to the
+         configured theme. Sits next to .theme-btn when the theme has
+         been changed. */
+      .theme-reset-btn { background: transparent; border: 1px solid var(--border);
+        color: var(--muted); cursor: pointer; padding: 3px 9px;
+        border-radius: var(--radius-sm); font-family: var(--font);
+        font-size: 14px; line-height: 1; transition: all 0.15s; }
+      .theme-reset-btn:hover { color: var(--header-text); border-color: var(--accent); }
+      /* fr-2026-05-21: dashboard reload button — forces a full page
+         reload. Matches the .theme-btn chrome family; icon-only. */
+      .reload-btn { background: transparent; border: 1px solid var(--border);
+        color: var(--muted); cursor: pointer; padding: 4px 8px;
+        border-radius: var(--radius-sm); transition: all 0.15s;
+        display: inline-flex; align-items: center; }
+      .reload-btn:hover { color: var(--header-text); border-color: var(--accent); }
+      .reload-btn .reload-ico { display: block; }
       .flagged-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
         cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 11px; transition: all 0.15s; }
       .flagged-btn:hover { border-color: var(--accent); }
@@ -3909,7 +3956,8 @@ class KatjaScheduleCard extends HTMLElement {
       }
       .starred-layout-d.is-zoomed .flow-dow { font-size: 13px; }
       .starred-layout-d.is-zoomed .flow-week { min-height: 56px;
-        border-bottom-width: 4px; border-bottom-color: rgba(229,165,16,0.62); }
+        border-bottom-width: 4px;
+        border-bottom-color: color-mix(in srgb, var(--accent) 62%, transparent); }
       .starred-layout-d.is-zoomed .flow-week-num { font-size: 12px; }
       .starred-layout-d.is-zoomed .flow-day-num { font-size: 14px; padding: 5px 8px 6px; }
       .starred-layout-d.is-zoomed .flow-day-num .flow-day-d { font-size: 18px; }
@@ -4147,6 +4195,12 @@ class KatjaScheduleCard extends HTMLElement {
          use the same amber as the web app for cross-surface consistency.
          ============================================================ */
       .starred-wrap { padding: 14px var(--card-pad); }
+      /* fr-2026-05-21: when the card is locked to the Starred view there
+         is no card header, so the theme / reset / reload controls render
+         in .floating-theme (absolute, top-right). Drop the Starred
+         content below that band so the floating buttons do not sit on
+         top of the .starred-head Zoom button. */
+      .card-locked .starred-wrap { padding-top: 44px; }
       .starred-head { display: flex; justify-content: space-between;
                       align-items: center; flex-wrap: wrap; gap: 10px;
                       padding: 10px 12px; margin-bottom: 12px;
@@ -4313,7 +4367,7 @@ class KatjaScheduleCard extends HTMLElement {
         display: grid;
         grid-template-columns: 28px repeat(7, minmax(0, 1fr));
         grid-auto-rows: auto;
-        border-bottom: 3px solid rgba(229,165,16,0.5);
+        border-bottom: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
         min-height: 38px;
       }
       .flow-week.is-alt { background: rgba(255,255,255,0.03); }
