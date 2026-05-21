@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.59.0";
+const CARD_VERSION = "0.60.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4277,8 +4277,9 @@ class KatjaScheduleCard extends HTMLElement {
          parsed as JS subtraction — the v0.48.0 ReferenceError. Use
          plain text or single quotes for any CSS selector mentioned
          in a comment here. */
-      .starred-layout-d { max-width: 1080px; margin: 0 auto;
-                          padding: 0 6px 24px;
+      /* Full-width: the grid fills the card. An earlier max-width:1080px
+         cap left dead space either side on the wide wall display. */
+      .starred-layout-d { padding: 0 6px 24px;
                           max-height: 640px; overflow-y: auto; }
       .flow-sticky-head {
         position: sticky; top: 0; z-index: 6;
