@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.57.0";
+const CARD_VERSION = "0.58.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -598,6 +598,18 @@ const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","
 const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// fr-2026-05-20: "expand to full screen" glyph for the Starred / calendar
+// zoom buttons. Drawn as inline SVG rather than a Unicode dingbat so it
+// renders identically on every HA dashboard font stack.
+const ZOOM_ICON = '<svg class="zoom-ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">'
+  + '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" '
+  + 'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// fr-2026-05-20: the zoom panel auto-reverts this long after the last
+// interaction. A visible countdown in the panel's title bar ticks this
+// down so the viewer knows it is about to close.
+const ZOOM_TIMEOUT_MS = 60000;
+
 class KatjaScheduleCard extends HTMLElement {
   connectedCallback() {
     // Minute-ticker for the Day View NOW line. HA re-renders the card
@@ -617,6 +629,8 @@ class KatjaScheduleCard extends HTMLElement {
   }
   disconnectedCallback() {
     if (this._nowTickerId) { clearInterval(this._nowTickerId); this._nowTickerId = null; }
+    if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
+    if (this._zoomTick) { clearInterval(this._zoomTick); this._zoomTick = null; }
   }
 
   constructor() {
@@ -636,6 +650,14 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionResult = null;
     this._originPickerMode = false;
     this._dayDetailDate = null;
+    // fr-2026-05-20: near-fullscreen zoom of the Starred / calendar grid.
+    // _zoomMode is null | "starred" | "calendar"; _zoomTimer is the
+    // auto-revert timeout, _zoomTick the 1s countdown-repaint interval,
+    // _zoomDeadline the wall-clock instant the revert fires.
+    this._zoomMode = null;
+    this._zoomTimer = null;
+    this._zoomTick = null;
+    this._zoomDeadline = null;
     this._theme = "dark";
     this._showFlagged = false;
     // fr-2026-05-11-a: per-day override of the global show-flagged
@@ -1226,7 +1248,65 @@ class KatjaScheduleCard extends HTMLElement {
     return { pendingCount, syncText, buildInfo };
   }
 
-  _switchView(v) { this._view = v; this._detailEvent = null; this._dayDetailDate = null; this._render(); }
+  _switchView(v) {
+    this._view = v;
+    this._detailEvent = null;
+    this._dayDetailDate = null;
+    this._closeZoomState();
+    this._render();
+  }
+  // ---- Near-fullscreen zoom (fr-2026-05-20) -------------------------
+  // The Starred grid and the month calendar are too small to read from
+  // across the room on the wall display. The expand button on each opens
+  // a 96vw x 94vh panel; a back button or a 60s inactivity timer reverts.
+  _openZoom(mode) {
+    if (mode !== "starred" && mode !== "calendar") return;
+    this._zoomMode = mode;
+    this._detailEvent = null;
+    this._dayDetailDate = null;
+    this._armZoomTimeout();
+    this._render();
+  }
+  _closeZoom() { this._closeZoomState(); this._render(); }
+  // Clear zoom state + timers without a re-render — for callers that
+  // render themselves (_switchView, _openZoom mode change).
+  _closeZoomState() {
+    this._zoomMode = null;
+    this._zoomDeadline = null;
+    if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
+    if (this._zoomTick) { clearInterval(this._zoomTick); this._zoomTick = null; }
+  }
+  // The zoom panel is a wall-display affordance: someone taps to look,
+  // then walks away. Revert 60s after the LAST interaction so the
+  // display returns to its home surface on its own. Any pointer/scroll
+  // inside the overlay re-arms this — and resets the visible countdown
+  // — so the panel never vanishes mid-read.
+  _armZoomTimeout() {
+    if (this._zoomTimer) clearTimeout(this._zoomTimer);
+    this._zoomDeadline = Date.now() + ZOOM_TIMEOUT_MS;
+    this._zoomTimer = setTimeout(() => {
+      this._zoomTimer = null;
+      if (this._zoomMode) this._closeZoom();
+    }, ZOOM_TIMEOUT_MS);
+    // 1s ticker repaints just the countdown text node — never a full
+    // _render(), which would reset the panel's scroll position.
+    if (!this._zoomTick) {
+      this._zoomTick = setInterval(() => this._paintZoomCountdown(), 1000);
+    }
+    this._paintZoomCountdown();
+  }
+  // Whole seconds remaining before the panel auto-reverts.
+  _zoomSecondsLeft() {
+    if (!this._zoomDeadline) return 0;
+    return Math.max(0, Math.ceil((this._zoomDeadline - Date.now()) / 1000));
+  }
+  _zoomCountdownText() { return `Auto-closes in ${this._zoomSecondsLeft()}s`; }
+  // Repaint the countdown in place — text node only, so the panel's
+  // scroll position survives (a full _render() would not).
+  _paintZoomCountdown() {
+    const el = this.shadowRoot && this.shadowRoot.querySelector(".zoom-countdown");
+    if (el) el.textContent = this._zoomCountdownText();
+  }
   _cycleTheme() {
     const keys = Object.keys(THEMES);
     const idx = keys.indexOf(this._theme);
@@ -1739,7 +1819,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${globalFlaggedBtnHTML}
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
         </div>` : ""}
-        ${body}${modal}${toast}
+        ${body}${this._renderZoomOverlay(grouped)}${modal}${toast}
       </div></ha-card>`;
 
     // Bind events
@@ -1767,10 +1847,33 @@ class KatjaScheduleCard extends HTMLElement {
       });
       this._openDetail(detail);
     }));
-    this.shadowRoot.querySelector(".flow-jump-today")?.addEventListener("click", () => {
-      const todayCell = this.shadowRoot.querySelector('[data-flow-today="1"]');
+    this.shadowRoot.querySelectorAll(".flow-jump-today").forEach(btn => btn.addEventListener("click", () => {
+      // Scope the scroll to this button's own grid — with the zoom
+      // overlay open there are two .starred-layout-d in the DOM, so a
+      // bare querySelector would scroll the hidden one behind it.
+      const layout = btn.closest(".starred-layout-d");
+      const todayCell = layout?.querySelector('[data-flow-today="1"]');
       if (todayCell) todayCell.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    // fr-2026-05-20: near-fullscreen zoom overlay — open buttons, the
+    // back button, edge-of-panel backdrop click, and interaction
+    // re-arming of the 60s auto-revert timer.
+    this.shadowRoot.querySelectorAll("[data-zoom-open]").forEach(btn =>
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._openZoom(btn.getAttribute("data-zoom-open"));
+      }));
+    this.shadowRoot.querySelector(".zoom-exit")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._closeZoom();
     });
+    this.shadowRoot.querySelector(".zoom-backdrop")?.addEventListener("click", () => this._closeZoom());
+    const zoomOverlay = this.shadowRoot.querySelector(".zoom-overlay");
+    if (zoomOverlay) {
+      const rearm = () => this._armZoomTimeout();
+      zoomOverlay.addEventListener("pointerdown", rearm);
+      zoomOverlay.addEventListener("scroll", rearm, true);
+    }
     this.shadowRoot.querySelector("#theme-cycle")?.addEventListener("click", () => this._cycleTheme());
     this.shadowRoot.querySelectorAll("#flagged-toggle").forEach(btn => btn.addEventListener("click", (e) => { e.stopPropagation(); this._toggleFlagged(); }));
     // fr-2026-05-11-a: per-day 🗑 buttons. Each carries data-day-flagged
@@ -2642,7 +2745,7 @@ class KatjaScheduleCard extends HTMLElement {
   // into the starred pane. `variant === "m3"` only changes which CSS
   // selector matches; the DOM is identical so toggling sub-layouts
   // never requires a re-fetch.
-  _renderStarredFlow(events, variant) {
+  _renderStarredFlow(events, variant, opts = {}) {
     if (!events.length) {
       return `<div class="starred-empty">
         <div class="s-empty-star">☆</div>
@@ -2722,8 +2825,9 @@ class KatjaScheduleCard extends HTMLElement {
     const todayParts = this._isoToParts(today);
     const todayLabel = `${MONTH_NAMES[todayParts.m - 1]} ${todayParts.y}`;
     const variantCls = variant === "m3" ? " is-m3" : "";
+    const zoomCls = opts.zoomed ? " is-zoomed" : "";
     let html = `
-      <div class="starred-layout-d${variantCls}">
+      <div class="starred-layout-d${variantCls}${zoomCls}">
         <div class="flow-sticky-head">
           <span class="flow-sticky-label">${todayLabel}</span>
           <button type="button" class="flow-jump-today">Jump to today</button>
@@ -2833,17 +2937,23 @@ class KatjaScheduleCard extends HTMLElement {
     };
   }
 
-  _renderStarredView() {
+  // `opts.zoomed` renders just the flow grid (no .starred-head, larger
+  // chips) for the zoom overlay — the overlay supplies its own title bar.
+  _renderStarredView(opts = {}) {
+    const zoomed = !!opts.zoomed;
     const evs = this._starredEvents || [];
     // Starred is always the D Flow layout — the contiguous 6-month
     // grid. The D/E/A/B/C sub-layout selector was removed
     // (fr-2026-05-20): D is the one that gets used, the picker was
     // just clutter on a wall display.
-    const header = `
+    const zoomBtn = zoomed ? "" :
+      `<button type="button" class="view-zoom-btn" data-zoom-open="starred" title="Zoom in to full screen">${ZOOM_ICON}<span>Zoom</span></button>`;
+    const header = zoomed ? "" : `
       <div class="starred-head">
         <div class="starred-head-title"><span class="s-star">★</span> Starred · next 6 months
           ${this._starredFetched ? `<span class="starred-count">· ${evs.length} event${evs.length===1?"":"s"}</span>` : ""}
         </div>
+        ${zoomBtn}
       </div>`;
     let pane = "";
     if (this._starredLoading && !this._starredFetched) {
@@ -2857,9 +2967,36 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="s-empty-hint">Star events from the web app to populate this view.</div>
       </div>`;
     } else {
-      pane = this._renderStarredFlow(evs);
+      pane = this._renderStarredFlow(evs, undefined, { zoomed });
     }
+    if (zoomed) return pane;
     return `<div class="starred-wrap">${header}<div class="starred-pane">${pane}</div></div>`;
+  }
+
+  // fr-2026-05-20: near-fullscreen zoom for the wall display. The expand
+  // button on the Starred grid and the month calendar opens a 96vw x
+  // 94vh panel so the whole 6-month flow / month grid is legible from
+  // across the room. A back button and a 60s inactivity timer
+  // (_armZoomTimeout) return to the normal card unattended.
+  _renderZoomOverlay(grouped) {
+    if (!this._zoomMode) return "";
+    let title, content;
+    if (this._zoomMode === "starred") {
+      title = "★ Starred · next 6 months";
+      content = this._renderStarredView({ zoomed: true });
+    } else {
+      title = "Calendar";
+      content = this._renderCalendarGrid(this._getMonAlignedDays(), grouped, { zoomed: true });
+    }
+    return `<div class="zoom-backdrop"></div>
+      <div class="zoom-overlay" data-zoom-mode="${this._zoomMode}">
+        <div class="zoom-bar">
+          <span class="zoom-bar-title">${title}</span>
+          <span class="zoom-countdown">${this._zoomCountdownText()}</span>
+          <button type="button" class="zoom-exit" title="Back to the normal view">✕ Exit zoom</button>
+        </div>
+        <div class="zoom-content">${content}</div>
+      </div>`;
   }
 
   _renderStarredAgenda(evs) {
@@ -3083,7 +3220,9 @@ class KatjaScheduleCard extends HTMLElement {
     return `<div class="event${isDrive?" is-drive":""}${pendingClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
-  _renderCalendarGrid(days, grouped) {
+  // `opts.zoomed` adds the .is-zoomed sizing class and drops the corner
+  // expand button (the zoom overlay supplies its own chrome).
+  _renderCalendarGrid(days, grouped, opts = {}) {
     const firstDate = new Date(days[0]+"T12:00:00");
     const jsDay = firstDate.getDay(), padBefore = jsDay===0?6:jsDay-1;
     const allDays = [];
@@ -3119,10 +3258,19 @@ class KatjaScheduleCard extends HTMLElement {
       }
     }
 
-    return `<div class="cal-grid">
+    const zoomed = !!opts.zoomed;
+    const gridHtml = `<div class="cal-grid${zoomed ? " is-zoomed" : ""}">
       <div class="cal-header-row">${DAY_SHORT_MON.map(d=>`<div class="cal-header-cell">${d}</div>`).join("")}</div>
       ${weeks.map(week => this._renderCalWeek(week, grouped, multiDay)).join("")}
     </div>`;
+    if (zoomed) return gridHtml;
+    // The expand button rides in a position:relative wrapper (not inside
+    // .cal-grid, which scrolls) so it stays pinned to the top-right
+    // corner while the grid scrolls beneath it.
+    return `<div class="cal-zoom-wrap">`
+      + `<button type="button" class="view-zoom-btn cal-zoom-btn" data-zoom-open="calendar" title="Zoom in to full screen">${ZOOM_ICON}</button>`
+      + gridHtml
+      + `</div>`;
   }
 
   // One week row of the Overview calendar grid, top to bottom:
@@ -3653,6 +3801,110 @@ class KatjaScheduleCard extends HTMLElement {
          even when a glance misses the dashed edge. */
       .cal-event.cal-pending { background: rgba(224,160,32,0.18); border-right: 2px dashed #E0A020; padding-right: 2px; }
       .cal-event.cal-pending-remove { background: rgba(200,64,30,0.18); border-right-color: #C8401E; text-decoration: line-through; opacity: 0.85; }
+
+      /* fr-2026-05-20: near-fullscreen zoom for the Starred grid + the
+         month calendar grid. The expand button on each view opens a
+         96vw x 94vh panel so the wall display is legible across the
+         room; a 60s inactivity timer (JS, _armZoomTimeout) reverts it.
+         WARNING: no backtick characters anywhere in this block — see
+         the note on the starred-layout-d rule below. */
+      .view-zoom-btn {
+        display: inline-flex; align-items: center; gap: 5px;
+        background: rgba(229,165,16,0.16);
+        border: 1px solid rgba(229,165,16,0.4);
+        color: var(--accent);
+        font-size: 13px; font-weight: 600; font-family: inherit;
+        border-radius: 8px; padding: 5px 10px;
+        cursor: pointer; flex: 0 0 auto;
+      }
+      .view-zoom-btn:hover { background: rgba(229,165,16,0.3); }
+      .view-zoom-btn .zoom-ico { display: block; }
+      .cal-zoom-wrap { position: relative; }
+      .cal-zoom-btn { position: absolute; top: 3px; right: 5px;
+        z-index: 4; padding: 6px 8px; }
+      .zoom-backdrop {
+        position: fixed; inset: 0; z-index: 95;
+        background: rgba(0,0,0,0.82);
+        backdrop-filter: blur(8px) saturate(0.6);
+        -webkit-backdrop-filter: blur(8px) saturate(0.6);
+      }
+      .zoom-overlay {
+        position: fixed; inset: 3vh 2vw; z-index: 96;
+        display: flex; flex-direction: column;
+        background: var(--card-bg, var(--ha-card-background, #1a1a1a));
+        background-color: #1a1a1a;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: 0 18px 60px rgba(0,0,0,0.7);
+        overflow: hidden;
+      }
+      .zoom-bar {
+        display: flex; align-items: center; gap: 14px;
+        flex: 0 0 auto; padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(229,165,16,0.12) 0%, rgba(229,165,16,0.05) 100%);
+      }
+      .zoom-bar-title {
+        flex: 1; min-width: 0;
+        font-family: var(--font-display);
+        font-size: 22px; font-weight: 700; color: var(--text-strong);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      /* Live countdown to the auto-revert. Repainted in place every
+         second by _paintZoomCountdown; tabular-nums keeps the width
+         steady so the digits do not jitter as they tick. */
+      .zoom-countdown {
+        flex: 0 0 auto;
+        font-size: 13px; font-weight: 600;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.2px; white-space: nowrap;
+      }
+      .zoom-exit {
+        flex: 0 0 auto;
+        background: rgba(229,165,16,0.2);
+        border: 1px solid rgba(229,165,16,0.45);
+        color: var(--accent);
+        font-size: 16px; font-weight: 700; font-family: inherit;
+        border-radius: 999px; padding: 9px 22px; cursor: pointer;
+      }
+      .zoom-exit:hover { background: rgba(229,165,16,0.34); }
+      .zoom-content { flex: 1 1 auto; overflow: auto; padding: 10px 16px 18px; }
+      /* Zoomed calendar grid — fills the panel; bigger cells + type so
+         the month reads from across the room. The grid stops being its
+         own scroll container (.zoom-content scrolls instead). */
+      .cal-grid.is-zoomed { max-height: none; overflow: visible; padding: 0; }
+      .cal-grid.is-zoomed .cal-header-cell { font-size: 16px; padding: 8px 0; }
+      .cal-grid.is-zoomed .cal-day { min-height: 96px; padding: 7px; }
+      .cal-grid.is-zoomed .cal-date { font-size: 18px; }
+      .cal-grid.is-zoomed .cal-today .cal-date { font-size: 21px; }
+      .cal-grid.is-zoomed .cal-events { gap: 2px; }
+      .cal-grid.is-zoomed .cal-event { font-size: 15px; padding: 2px 3px; line-height: 1.35; }
+      .cal-grid.is-zoomed .cal-event-dot { width: 9px; height: 9px; }
+      .cal-grid.is-zoomed .cal-event-time { font-size: 13px; }
+      .cal-grid.is-zoomed .cal-event-text { font-size: calc(15px + var(--katja-font-adjust, 0px)); }
+      .cal-grid.is-zoomed .cal-week-bars { grid-auto-rows: 24px; }
+      .cal-grid.is-zoomed .cal-mdbar { font-size: 14px; line-height: 22px; }
+      /* Zoomed Starred flow — fills the panel; bigger chips + type. The
+         28px week-number gutter widens to 36px so the larger week
+         numbers fit; the dow / week / rules grids must all match. */
+      .starred-layout-d.is-zoomed {
+        max-width: none; max-height: none; overflow: visible;
+        margin: 0; padding: 0 4px 24px;
+      }
+      .starred-layout-d.is-zoomed .flow-dow,
+      .starred-layout-d.is-zoomed .flow-week,
+      .starred-layout-d.is-zoomed .flow-week-rules {
+        grid-template-columns: 36px repeat(7, minmax(0, 1fr));
+      }
+      .starred-layout-d.is-zoomed .flow-dow { font-size: 13px; }
+      .starred-layout-d.is-zoomed .flow-week { min-height: 56px; }
+      .starred-layout-d.is-zoomed .flow-week-num { font-size: 12px; }
+      .starred-layout-d.is-zoomed .flow-day-num { font-size: 14px; padding: 5px 8px 6px; }
+      .starred-layout-d.is-zoomed .flow-day-num .flow-day-d { font-size: 18px; }
+      .starred-layout-d.is-zoomed .flow-day-num .flow-month-tag { font-size: 11px; }
+      .starred-layout-d.is-zoomed .flow-day-num .flow-month-pill { font-size: 12px; }
+      .starred-layout-d.is-zoomed .flow-event { height: 26px; line-height: 26px; font-size: 14.5px; }
 
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
