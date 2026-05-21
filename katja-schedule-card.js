@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.58.0";
+const CARD_VERSION = "0.59.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3737,11 +3737,15 @@ class KatjaScheduleCard extends HTMLElement {
          outline box, not three stacked ones. The date row / bar strip
          / chip grid each span all 7 columns. */
       .cal-week-wrap { display: grid; grid-template-columns: repeat(7, 1fr);
-        column-gap: 3px; margin-bottom: 4px; padding-top: 4px;
-        border-top: 2px solid rgba(255,255,255,0.30); }
+        column-gap: 3px; margin-bottom: 5px; padding-top: 5px;
+        border-top: 3px solid rgba(255,255,255,0.55); }
       .cal-week-dates, .cal-week-bars, .cal-week { grid-column: 1 / -1; }
+      /* Today's box: a 3px inset accent border (box-shadow, so it can't
+         spill into the column gap) around the whole today column — date
+         cell, bar strip slice and chip cell — matching the boxed look
+         of today in the Starred grid. */
       .cal-today-col { grid-row: 1 / -1; align-self: stretch;
-        outline: 2px solid var(--accent); outline-offset: -1px;
+        box-shadow: inset 0 0 0 3px var(--accent);
         border-radius: var(--radius-xs); background: var(--cal-today-bg);
         pointer-events: none; }
       .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; align-items: stretch; }
@@ -3779,8 +3783,8 @@ class KatjaScheduleCard extends HTMLElement {
          the same 1.5× so the same number of weeks show before
          scrolling. */
       .cal-day { background: var(--cal-day-bg); border-radius: var(--radius-xs); padding: 4px; min-height: calc(var(--cal-min) * 1.5); overflow: hidden; }
-      /* Today's box is drawn by .cal-today-col (one outline spanning
-         the whole column); .cal-today now only tints the date digit. */
+      /* Today's box is drawn by .cal-today-col (one inset border
+         spanning the whole column); .cal-today now only tints the date digit. */
       .cal-outside { opacity: 0.25; }
       .cal-past { opacity: 0.35; }
       .cal-weekend { background: var(--weekend-bg); }
@@ -3809,19 +3813,19 @@ class KatjaScheduleCard extends HTMLElement {
          WARNING: no backtick characters anywhere in this block — see
          the note on the starred-layout-d rule below. */
       .view-zoom-btn {
-        display: inline-flex; align-items: center; gap: 5px;
-        background: rgba(229,165,16,0.16);
-        border: 1px solid rgba(229,165,16,0.4);
+        display: inline-flex; align-items: center; gap: 6px;
+        background: rgba(229,165,16,0.18);
+        border: 1px solid rgba(229,165,16,0.45);
         color: var(--accent);
-        font-size: 13px; font-weight: 600; font-family: inherit;
-        border-radius: 8px; padding: 5px 10px;
+        font-size: 15px; font-weight: 700; font-family: inherit;
+        border-radius: 9px; padding: 8px 14px;
         cursor: pointer; flex: 0 0 auto;
       }
-      .view-zoom-btn:hover { background: rgba(229,165,16,0.3); }
-      .view-zoom-btn .zoom-ico { display: block; }
+      .view-zoom-btn:hover { background: rgba(229,165,16,0.32); }
+      .view-zoom-btn .zoom-ico { display: block; width: 20px; height: 20px; }
       .cal-zoom-wrap { position: relative; }
-      .cal-zoom-btn { position: absolute; top: 3px; right: 5px;
-        z-index: 4; padding: 6px 8px; }
+      .cal-zoom-btn { position: absolute; top: 5px; right: 7px;
+        z-index: 4; padding: 9px 10px; }
       .zoom-backdrop {
         position: fixed; inset: 0; z-index: 95;
         background: rgba(0,0,0,0.82);
@@ -3885,6 +3889,12 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-grid.is-zoomed .cal-event-text { font-size: calc(15px + var(--katja-font-adjust, 0px)); }
       .cal-grid.is-zoomed .cal-week-bars { grid-auto-rows: 24px; }
       .cal-grid.is-zoomed .cal-mdbar { font-size: 14px; line-height: 22px; }
+      /* Stronger week-to-week separation + a bolder today box at zoom
+         distance — both need to read from across the room. */
+      .cal-grid.is-zoomed .cal-week-wrap { border-top-width: 4px;
+        border-top-color: rgba(255,255,255,0.72);
+        padding-top: 8px; margin-bottom: 8px; }
+      .cal-grid.is-zoomed .cal-today-col { box-shadow: inset 0 0 0 4px var(--accent); }
       /* Zoomed Starred flow — fills the panel; bigger chips + type. The
          28px week-number gutter widens to 36px so the larger week
          numbers fit; the dow / week / rules grids must all match. */
@@ -3898,7 +3908,8 @@ class KatjaScheduleCard extends HTMLElement {
         grid-template-columns: 36px repeat(7, minmax(0, 1fr));
       }
       .starred-layout-d.is-zoomed .flow-dow { font-size: 13px; }
-      .starred-layout-d.is-zoomed .flow-week { min-height: 56px; }
+      .starred-layout-d.is-zoomed .flow-week { min-height: 56px;
+        border-bottom-width: 4px; border-bottom-color: rgba(229,165,16,0.62); }
       .starred-layout-d.is-zoomed .flow-week-num { font-size: 12px; }
       .starred-layout-d.is-zoomed .flow-day-num { font-size: 14px; padding: 5px 8px 6px; }
       .starred-layout-d.is-zoomed .flow-day-num .flow-day-d { font-size: 18px; }
@@ -4301,7 +4312,7 @@ class KatjaScheduleCard extends HTMLElement {
         display: grid;
         grid-template-columns: 28px repeat(7, minmax(0, 1fr));
         grid-auto-rows: auto;
-        border-bottom: 2px solid rgba(229,165,16,0.32);
+        border-bottom: 3px solid rgba(229,165,16,0.5);
         min-height: 38px;
       }
       .flow-week.is-alt { background: rgba(255,255,255,0.03); }
