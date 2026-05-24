@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.62.0";
+const CARD_VERSION = "0.63.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -83,7 +83,13 @@ const THEMES = {
     calDayBg: "color-mix(in srgb, var(--primary-text-color) 3%, transparent)",
     calTodayBg: "color-mix(in srgb, var(--primary-color) 12%, transparent)",
     weekendBg: "color-mix(in srgb, var(--warning-color, #ffb060) 6%, transparent)",
-    modalBg: "var(--ha-card-background, var(--card-background-color, #fff))",
+    // HA's --ha-card-background is frequently translucent (glass / mushroom
+    // themes), which made the event-detail sheet read through to the
+    // schedule beneath it. --primary-background-color is the dashboard
+    // page background and is opaque in every stock HA theme, so use it
+    // first; the .modal CSS rule also layers an opaque #fff fallback so
+    // a custom theme that breaks both vars still doesn't bleed through.
+    modalBg: "var(--primary-background-color, var(--card-background-color, #fff))",
     modalText: "var(--primary-text-color)",
     font: "var(--paper-font-body1_-_font-family, var(--ha-font-family-body, 'Segoe UI', system-ui, sans-serif))",
     fontDisplay: "var(--paper-font-headline_-_font-family, var(--ha-font-family-body, 'Segoe UI', system-ui, sans-serif))",
@@ -1831,7 +1837,9 @@ class KatjaScheduleCard extends HTMLElement {
             ).join("")}
           </div>` : ""}
           <div class="meta">
-            ${pendingCount > 0 ? `<button class="badge pending-pill" id="open-review" title="Open review queue">${pendingCount} pending</button>` : ""}
+            ${pendingCount > 0
+              ? `<button class="badge pending-pill" id="open-review" title="Open review queue (${pendingCount} pending)">⚠ ${pendingCount} pending · Review</button>`
+              : `<button class="badge review-pill" id="open-review" title="Open review queue (no pending items)">Review queue</button>`}
             ${syncText ? `<span>Synced ${_esc(syncText)}</span>` : ""}
             <span class="version">v${CARD_VERSION}${buildInfo ? ` · app ${_esc(buildInfo)}` : ""}</span>
             ${this._showThemeToggle ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
@@ -2376,15 +2384,35 @@ class KatjaScheduleCard extends HTMLElement {
               title="${ev._starred ? 'Unstar this event' : 'Star this event'}">
         ${ev._starred ? '★' : '☆'}
       </button>` : "";
+    // Loud pending-review banner above the modal body — the inline
+    // review bar already gives Accept/Reject controls but a passing
+    // glance can miss those buttons when the modal is tall. Banner
+    // makes "this row isn't on your schedule yet" unmissable.
+    const pendingKinds = {add: "agent proposed adding this event",
+                          update: "agent proposed editing this event",
+                          remove: "agent proposed removing this event",
+                          hide: "agent proposed hiding this event",
+                          accept: "agent proposed accepting this event",
+                          merge: "agent proposed merging this with another event"};
+    let pendingBanner = "";
+    if (pp && pp.kind) {
+      pendingBanner = `<div class="modal-pending-banner pending-${_esc(pp.kind)}">⚠ PENDING REVIEW — ${_esc(pendingKinds[pp.kind] || pp.kind)}</div>`;
+    } else if (status === "new") {
+      pendingBanner = `<div class="modal-pending-banner pending-add">⚠ PENDING REVIEW — new on your calendar, not yet accepted</div>`;
+    } else if (status === "changed") {
+      pendingBanner = `<div class="modal-pending-banner pending-update">⚠ PENDING REVIEW — calendar event changed since you accepted it</div>`;
+    }
+    const modalClass = (pendingBanner ? " is-pending" : "");
     return `
       <div class="modal-backdrop">
-        <div class="modal">
+        <div class="modal${modalClass}">
           <div class="modal-header">
             <span class="modal-dot" style="background:${_esc(color)}"></span>
             <span class="modal-title">${_esc(summary)}</span>
             ${starButton}
             <button class="modal-close">✕</button>
           </div>
+          ${pendingBanner}
           <div class="modal-body">
             <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${_esc(location)}</span></div>` : ""}
@@ -3422,7 +3450,14 @@ class KatjaScheduleCard extends HTMLElement {
         const pendingPrefix = pendingKind ? "⚠ " : "";
         // Single-day events are a person-colored bullet + text — no
         // filled background box (fr-2026-05-20). flagged → struck out.
-        return `<div class="cal-event${pendingCls}" style="${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+        // data-event-idx makes the chip itself a tap target so the user
+        // can open the event detail without first opening the day; the
+        // day-cell click handler skips when e.target.closest matches an
+        // event-idx element. The fallback day-tap still works for empty
+        // areas of the cell.
+        const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
+        const idxAttr = evIdx >= 0 ? ` data-event-idx="${evIdx}"` : "";
+        return `<div class="cal-event${pendingCls}"${idxAttr} style="cursor:pointer;${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
       return `<div class="cal-day${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><div class="cal-events">${chips}</div></div>`;
     }).join("");
@@ -3994,7 +4029,20 @@ class KatjaScheduleCard extends HTMLElement {
 
       /* Modal */
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; display: flex; align-items: center; justify-content: center; }
-      .modal { background: var(--modal-bg); color: var(--modal-text); border-radius: var(--radius); width: min(520px, 90vw); max-height: 85vh; overflow-y: auto; box-shadow: var(--modal-shadow); font-family: var(--font); }
+      /* The modal MUST be visually opaque — when --modal-bg resolves to
+         a translucent HA variable (the "none" theme on a glass HA theme
+         used to read straight through to the schedule beneath), the
+         sheet feels broken. Layer the themed color on top of a solid
+         fallback so the modal never bleeds. Light fallback by default;
+         a prefers-color-scheme: dark override is below. */
+      .modal { background-color: #ffffff;
+        background-image: linear-gradient(var(--modal-bg, #ffffff), var(--modal-bg, #ffffff));
+        color: var(--modal-text); border-radius: var(--radius);
+        width: min(520px, 90vw); max-height: 85vh; overflow-y: auto;
+        box-shadow: var(--modal-shadow); font-family: var(--font); }
+      @media (prefers-color-scheme: dark) {
+        .modal { background-color: #1a1a1a; }
+      }
       /* Wider variant for the calendar-tap day-detail modal, which
          houses a full dayview-row (list + hour-axis) and needs more
          horizontal room than the standard event-detail modal. */
@@ -4006,13 +4054,11 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-backdrop-strong { background: rgba(0,0,0,0.85);
         backdrop-filter: blur(10px) saturate(0.6);
         -webkit-backdrop-filter: blur(10px) saturate(0.6); }
-      /* The dayview modal can't rely on the theme's --modal-bg alone:
-         on HA themes where --ha-card-background is translucent, the
-         modal becomes see-through and you can read the schedule
-         underneath. Layer an opaque dark base behind the theme color
-         so the modal is solid regardless of theme translucency. */
-      .modal.modal-dayview { background: var(--modal-bg, #1a1a1a);
-        background-color: #1a1a1a;
+      /* The dayview modal uses the same layered-opaque trick as .modal
+         (above) but with a dark default fallback — it's a big surface
+         so a light flash on a dark dashboard would be jarring. */
+      .modal.modal-dayview { background-color: #1a1a1a;
+        background-image: linear-gradient(var(--modal-bg, #1a1a1a), var(--modal-bg, #1a1a1a));
         position: relative; }
       .modal-body-dayview { padding: 8px 12px;
         /* Reset the user's per-view font-adjust inside the modal —
@@ -4166,12 +4212,29 @@ class KatjaScheduleCard extends HTMLElement {
         font-weight: 700; font-size: 13px; cursor: pointer;
         font-family: var(--font); }
       .pending-pill:hover { filter: brightness(1.05); }
+      /* Always-visible review-queue entry point — quieter than the
+         pending-pill so it doesn't compete for attention when the
+         queue is empty, but still discoverable as a tap target. */
+      .review-pill { background: transparent; color: var(--muted);
+        border: 1px dashed var(--border); border-radius: 999px;
+        padding: 4px 12px; font-weight: 600; font-size: 12px;
+        cursor: pointer; font-family: var(--font); letter-spacing: 0.02em; }
+      .review-pill:hover { color: var(--text-strong); border-color: var(--text-strong); }
       /* Inline review bar on the event-detail modal (fr-2026-05-11-b). */
       .inline-review-bar { display: flex; align-items: center; gap: 8px;
         margin: 10px 0; padding: 8px 10px; border-radius: var(--radius-sm);
         background: rgba(255,210,0,0.07); border: 1px solid rgba(255,210,0,0.3); }
       .inline-review-label { flex: 1; font-size: 12px; color: var(--muted);
         font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+      /* Loud "PENDING REVIEW" banner under the modal header — makes the
+         pending state impossible to miss before the user reads the
+         body or scrolls to the Accept/Reject buttons. */
+      .modal-pending-banner { padding: 8px 20px; font-size: 12px;
+        font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+        background: #946B1F; color: #fff; border-bottom: 1px solid #7A571A; }
+      .modal-pending-banner.pending-remove { background: #8B2E2E; border-bottom-color: #6B1F1F; }
+      .modal-pending-banner.pending-add { background: #946B1F; }
+      .modal.is-pending { box-shadow: var(--modal-shadow), 0 0 0 2px #946B1F; }
 
       /* Recheck */
       .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
