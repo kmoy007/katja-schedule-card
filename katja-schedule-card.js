@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.63.0";
+const CARD_VERSION = "0.64.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1117,7 +1117,14 @@ class KatjaScheduleCard extends HTMLElement {
       : `${start.h}:${start.m < 10 ? `0${start.m}` : start.m}${ap}`;
   }
 
-  _isDrive(s) { return s && s.toLowerCase().includes("drive"); }
+  // bug-20260525-094139: a Taxi → LAX row was missing the drive
+  // classification because the check was a literal "drive" substring.
+  // Widen to the household transport vocabulary — mirrors
+  // `renderer.is_drive_like` (Python) and the regex in
+  // templates/schedule.html (web JS). Keep all three in sync.
+  _isDrive(s) {
+    return !!s && /\b(drive|driving|taxi|uber|lyft|rideshare|cab)\b/i.test(s);
+  }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
 
   // Mirror of templates/schedule.html's `_LA_AIRPORTS` so the wall
