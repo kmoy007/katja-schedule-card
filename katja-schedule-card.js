@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.64.0";
+const CARD_VERSION = "0.65.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1482,6 +1482,10 @@ class KatjaScheduleCard extends HTMLElement {
     return this._doReviewAction("katja_schedule/hide_event",
                                   {event_id}, [event_id]);
   }
+  _unhideCalendarEvent(event_id) {
+    return this._doReviewAction("katja_schedule/unhide_event",
+                                  {event_id}, [event_id]);
+  }
   // Bulk operations.
   _acceptAllNew() {
     return this._doReviewAction("katja_schedule/accept_all_new", {}, []);
@@ -1686,6 +1690,30 @@ class KatjaScheduleCard extends HTMLElement {
       this._actionResult = { ok: false, error: e.message };
     }
     this._actionLoading = false; this._render();
+  }
+
+  // Hide straight from the detail modal — web-app parity (2026-06-05):
+  // previously only Skip was offered here, so hiding a normal event meant
+  // opening the review queue. Confirms (this isn't a one-week skip), then
+  // routes through the same WS hide command the inline review bar uses.
+  async _hideEventFromDetail(ev) {
+    if (!this._hass || !ev?._eventId) return;
+    const what = (ev.summary || "").trim();
+    const ok = confirm(
+      `Hide "${what}"?\n\n` +
+      "It's removed from the schedule and won't come back on future " +
+      "refreshes. Use Skip this week instead if it's only off for one week."
+    );
+    if (!ok) return;
+    await this._hideCalendarEvent(ev._eventId);
+    this._closeDetail();
+  }
+
+  // Mirror of the above for an already-hidden row.
+  async _unhideEventFromDetail(ev) {
+    if (!this._hass || !ev?._eventId) return;
+    await this._unhideCalendarEvent(ev._eventId);
+    this._closeDetail();
   }
 
   // ====================== RENDER ======================
@@ -2004,6 +2032,8 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
     this.shadowRoot.querySelector(".skip-week-btn")?.addEventListener("click", () => this._skipThisWeek(this._detailEvent));
+    this.shadowRoot.querySelector(".hide-event-btn")?.addEventListener("click", () => this._hideEventFromDetail(this._detailEvent));
+    this.shadowRoot.querySelector(".unhide-event-btn")?.addEventListener("click", () => this._unhideEventFromDetail(this._detailEvent));
     this.shadowRoot.querySelector(".modal-star")?.addEventListener("click", () => this._toggleStar(this._detailEvent));
     // fr-2026-05-11-b: inline Accept/Reject on the event-detail sheet.
     this.shadowRoot.querySelector(".inline-apply")?.addEventListener("click", async (e) => {
@@ -2264,6 +2294,21 @@ class KatjaScheduleCard extends HTMLElement {
       </div>`;
     }
 
+    // Hide / Unhide as a standalone detail action — web-app parity
+    // (2026-06-05). For a real, non-pending, non-proposal event the
+    // modal offers Hide (removed from the schedule, revealable via the
+    // 🗑 toggle); an already-hidden row offers Unhide instead. Pending
+    // NEW/CHANGED rows already get Hide via the inline review bar above,
+    // so they're excluded here to avoid a duplicate control.
+    let hideSection = "";
+    const _isHiddenStatus = status === "hidden_rule" || status === "hidden_oneoff";
+    if (evId && !pp && _isHiddenStatus) {
+      hideSection = `<button class="unhide-event-btn" ${this._actionLoading?"disabled":""}>↩ Unhide</button>`;
+    } else if (evId && !pp && status !== "new" && status !== "changed"
+               && status !== "conflict" && status !== "orphan") {
+      hideSection = `<button class="hide-event-btn" ${this._actionLoading?"disabled":""}>✕ Hide</button>`;
+    }
+
     // Recheck section. Flight events get TWO affordances side-by-side
     // (matches the web's event-sheet UX from bug-20260505-122645):
     // a Recheck Flight Status button on top, and below it an origin
@@ -2430,6 +2475,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${resultSection}
             ${actionSection}
             ${skipSection}
+            ${hideSection}
           </div>
         </div>
       </div>`;
@@ -4248,6 +4294,12 @@ class KatjaScheduleCard extends HTMLElement {
       .skip-week-btn { display: block; width: 100%; margin-top: 12px; padding: 12px; border: 1px solid #E08890; border-radius: var(--radius-sm); background: rgba(255,199,206,0.15); color: #E08890; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .skip-week-btn:hover { background: rgba(255,199,206,0.25); }
       .skip-week-btn:disabled { opacity: 0.5; cursor: wait; }
+      .hide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .hide-event-btn:hover { background: rgba(139,46,46,0.30); }
+      .hide-event-btn:disabled { opacity: 0.5; cursor: wait; }
+      .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: rgba(46,139,87,0.18); color: #7BD7A6; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .unhide-event-btn:hover { background: rgba(46,139,87,0.30); }
+      .unhide-event-btn:disabled { opacity: 0.5; cursor: wait; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
 
