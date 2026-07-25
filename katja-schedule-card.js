@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.65.0";
+const CARD_VERSION = "0.66.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -955,6 +955,12 @@ class KatjaScheduleCard extends HTMLElement {
         _label: args.who || "",
         _status: "",
         _eventId: "",
+        // Inclusive last day of a spanning proposal (a hotel stay, a
+        // trip). _fanOutMultiDay runs after ghosts are concatenated, so
+        // setting this is all it takes for the stay to cover its days —
+        // without it a Sun→Mon booking only showed on check-in day
+        // (bug-ios-20260724-194913).
+        _dtEnd: args.dt_end || "",
         _pendingProposal: {kind: "add", id: p.id},
       });
     }
