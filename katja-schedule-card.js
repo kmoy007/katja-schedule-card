@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.66.0";
+const CARD_VERSION = "0.67.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2247,6 +2247,30 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== DETAIL MODAL ======================
 
+  // Geocodable address out of a free-form Where string. Mirrors the
+  // web's extractAddressForMaps and iOS MapsLink.extractAddress — keep
+  // the three in agreement: " · " separates address from annotations
+  // (phone numbers), the US path anchors on ", ST 12345" and trims
+  // trailing note blobs, the international path accepts leading street
+  // number + comma (bug-ios-20260726-185757). Venue names return null.
+  _extractAddressForMaps(text) {
+    const first = String(text || "").split(" · ")[0].trim();
+    if (!first) return null;
+    const us = first.match(/,\s[A-Z]{2}(\s\d{5})?/);
+    if (us) return first.slice(0, us.index + us[0].length).trim() || null;
+    if (/^\d+\s+\S/.test(first) && first.includes(",")) {
+      return first.split(" — ")[0].trim() || null;
+    }
+    return null;
+  }
+
+  // Full string displayed; only the address portion geocoded.
+  _linkifyWhere(location) {
+    const query = this._extractAddressForMaps(location) || location.trim();
+    const url = "https://maps.google.com/?q=" + encodeURIComponent(query);
+    return `<a class="maps-link" href="${url}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">${_esc(location)}</a>`;
+  }
+
   _renderDetailModal(ev) {
     const summary = ev.summary || "", time = this._formatTime(ev);
     const date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
@@ -2263,8 +2287,15 @@ class KatjaScheduleCard extends HTMLElement {
     const isAccepted = !!ev._eventId && !flagged
       && status !== "new" && status !== "changed"
       && status !== "conflict" && status !== "orphan";
+    // Keep in agreement with the web's isSkippable and iOS
+    // TodayView.eventIsSkippable — same rule, three languages
+    // (bug-ios-20260726-082159: the button rendered on a one-off flight
+    // and a hotel). Flights and multi-day stays are structurally
+    // one-off: "skip this week" stamps a permanent SKIPPED label on
+    // something that has no next week.
+    const skipEligible = isAccepted && !isFlight && !ev._dtEnd;
     let skipSection = "";
-    if (isAccepted) {
+    if (skipEligible) {
       skipSection = `<button class="skip-week-btn" ${this._actionLoading?"disabled":""}>⚠️ Skip this week</button>`;
     }
 
@@ -2473,7 +2504,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${pendingBanner}
           <div class="modal-body">
             <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
-            ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${_esc(location)}</span></div>` : ""}
+            ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
             ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(description)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
             ${inlineReviewSection}
