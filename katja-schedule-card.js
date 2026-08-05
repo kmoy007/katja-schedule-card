@@ -2288,7 +2288,7 @@ class KatjaScheduleCard extends HTMLElement {
       && status !== "new" && status !== "changed"
       && status !== "conflict" && status !== "orphan";
     // Keep in agreement with the web's isSkippable and iOS
-    // TodayView.eventIsSkippable — same rule, three languages
+    // EventDetailSheet.eventIsSkippable — same rule, three languages
     // (bug-ios-20260726-082159: the button rendered on a one-off flight
     // and a hotel). Flights and multi-day stays are structurally
     // one-off: "skip this week" stamps a permanent SKIPPED label on
