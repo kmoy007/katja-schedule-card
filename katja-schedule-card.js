@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.68.0";
+const CARD_VERSION = "0.69.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2673,7 +2673,12 @@ class KatjaScheduleCard extends HTMLElement {
         // it's now an umbrella for non-full tiers. Add a tier-specific
         // class (`is-tight` / `is-tiny` / `is-stub`) for finer styling.
         const isCompact = tier !== "full";
-        const cls = `dv-event is-${tier}${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
+        // Deleted upstream — see `_renderEvent`. The hour axis is the
+        // part of this display people actually read for "what is left
+        // today", so an unmarked orphan here undoes the marking on the
+        // list beside it.
+        const dvOrphan = (ev._status || "") === "orphan";
+        const cls = `dv-event is-${tier}${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${dvOrphan ? " is-orphan" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
         const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
         const timeStr = this._formatTime(ev);
         const summary = _esc(ev.summary || "");
@@ -3564,7 +3569,15 @@ class KatjaScheduleCard extends HTMLElement {
         // areas of the cell.
         const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
         const idxAttr = evIdx >= 0 ? ` data-event-idx="${evIdx}"` : "";
-        return `<div class="cal-event${pendingCls}"${idxAttr} style="cursor:pointer;${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+        // Deleted upstream — see `_renderEvent`. A chip is too small for
+        // a REMOVED tag, so it gets the struck-through, faded treatment
+        // flagged rows already use. Without this the month grid keeps
+        // showing a practice the calendar no longer has.
+        const calOrphan = (ev._status || "") === "orphan";
+        const orphanCls = calOrphan ? " cal-orphan" : "";
+        const orphanStyle = (calOrphan && !fl)
+          ? "opacity:0.5;text-decoration:line-through" : "";
+        return `<div class="cal-event${pendingCls}${orphanCls}"${idxAttr} style="cursor:pointer;${fl?"opacity:0.4;text-decoration:line-through":orphanStyle}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
       return `<div class="cal-day${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><div class="cal-events">${chips}</div></div>`;
     }).join("");
@@ -3867,6 +3880,7 @@ class KatjaScheduleCard extends HTMLElement {
          opens the detail modal. */
       .dv-event.is-stub { padding: 0; background: var(--event-hover); }
       .dv-event.is-flagged { opacity: 0.4; text-decoration: line-through; }
+      .dv-event.is-orphan { opacity: 0.5; text-decoration: line-through; border-left-style: dashed !important; }
       .dv-event.is-drive { font-style: italic; opacity: 0.85; }
       .dv-event.is-pending {
         border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
@@ -3932,8 +3946,10 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
       /* Deleted upstream, awaiting confirmation. Deliberately grey and
          quiet rather than alarming — this isn't a problem, it's a row
-         that has stopped being real. Matches the web's `tr.row-orphan`
-         (dashed edge, muted) and the REMOVED wording used on iOS. */
+         that has stopped being real. Matches the web's tr.row-orphan
+         (dashed edge, muted) and the REMOVED wording used on iOS.
+         NOTE: no backticks in this block — it lives inside a JS
+         template literal, and one would end the string. */
       .orphan-tag { display: inline-flex; align-items: center; background: rgba(140,140,140,0.18); color: #9A9A9A; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
       .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
