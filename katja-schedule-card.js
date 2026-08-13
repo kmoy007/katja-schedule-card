@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.67.0";
+const CARD_VERSION = "0.68.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3378,6 +3378,23 @@ class KatjaScheduleCard extends HTMLElement {
     }
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
     const flaggedTag = flagged ? `<span class="flag-tag">${_esc(this._flaggedLabel(ev))}</span>` : "";
+    // Orphan = the backing calendar event was deleted upstream; the row
+    // survives until someone confirms the removal. On a wall display
+    // that distinction matters more than anywhere else — this is the
+    // screen the family glances at on the way out of the door, and an
+    // unmarked orphan is an invitation to drive to something that
+    // isn't happening (bug-ios-20260813-123557: a practice that had
+    // moved showed the dead slot and the real one side by side).
+    // Pending proposals still win the tag slot — a queued decision is
+    // the more urgent fact. Same word as the web, iOS and the review
+    // modal: REMOVED.
+    const isOrphan = (ev._status || "") === "orphan";
+    const orphanClass = isOrphan ? " is-orphan" : "";
+    const orphanStyle = isOrphan && !flagged
+      ? " opacity:0.55; text-decoration:line-through;" : "";
+    const orphanTag = (isOrphan && !pendingTag)
+      ? `<span class="orphan-tag" title="No longer in the calendar — stays until the removal is confirmed in Review.">REMOVED</span>`
+      : "";
     const colorAttr = _esc(ev._color || "#888");
     // fr-2026-05-19-b parity: continuation rows (intermediate / end
     // days of a multi-day span) render italic + faded with a "↳ "
@@ -3393,7 +3410,7 @@ class KatjaScheduleCard extends HTMLElement {
     const summaryPrefix = isContinuation ? "↳ " : "";
     const starIndicator = ev._starred ? `<span class="row-star-indicator" title="Starred">★</span>` : "";
     const spanChip = isSpanStart ? `<span class="multi-day-chip" title="Continues through ${_esc(ev._dtEnd)}">→ ${_esc(ev._dtEnd)}</span>` : "";
-    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${orphanStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   // `opts.zoomed` adds the .is-zoomed sizing class and drops the corner
@@ -3913,6 +3930,12 @@ class KatjaScheduleCard extends HTMLElement {
       .pending-tag.pending-remove { background: rgba(200,64,30,0.18); color: #C8401E; }
       .event.is-pending { border-left: 3px dashed #E0A020; padding-left: calc(var(--event-pad-h) - 3px); background: rgba(224,160,32,0.06); }
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
+      /* Deleted upstream, awaiting confirmation. Deliberately grey and
+         quiet rather than alarming — this isn't a problem, it's a row
+         that has stopped being real. Matches the web's `tr.row-orphan`
+         (dashed edge, muted) and the REMOVED wording used on iOS. */
+      .orphan-tag { display: inline-flex; align-items: center; background: rgba(140,140,140,0.18); color: #9A9A9A; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
+      .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
       /* Calendar grid — show ~3 weeks comfortably (even when cells
