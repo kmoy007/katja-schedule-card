@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.69.0";
+const CARD_VERSION = "0.70.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -662,6 +662,11 @@ class KatjaScheduleCard extends HTMLElement {
     this._actionLoading = false;
     this._actionResult = null;
     this._originPickerMode = false;
+    // Hide menu state inside the event-detail modal (2026-09-23, replaces
+    // "Skip this week" + confirm()-gated Hide). null = closed; otherwise
+    // {step: "choose"|"rule"|"confirm", mode, pattern, scope, until,
+    //  untilCustom, reason, preview, loading, error, seq, timer}.
+    this._hideMenu = null;
     this._dayDetailDate = null;
     // fr-2026-05-20: near-fullscreen zoom of the Starred / calendar grid.
     // _zoomMode is null | "starred" | "calendar"; _zoomTimer is the
@@ -852,6 +857,9 @@ class KatjaScheduleCard extends HTMLElement {
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
             _eventId: meta.eventid || "",
+            // "Source: <calendar_label>" line from calendar.py — the hide
+            // menu scopes a new rule to this calendar by default.
+            _calendarLabel: meta.source || "",
             // fr-2026-05-19 HA-parity: surface multi-day end + star
             // state so downstream rendering can fan the event across
             // every spanned day and show per-row star indicators.
@@ -1349,8 +1357,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._theme = THEMES[this._defaultTheme] ? this._defaultTheme : "dark";
     this._render();
   }
-  _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._render(); }
-  _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._render(); }
+  _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
@@ -1671,51 +1679,354 @@ class KatjaScheduleCard extends HTMLElement {
     this._render();
   }
 
-  async _skipThisWeek(ev) {
-    if (!this._hass || !ev?._eventId) return;
-    const what = (ev.summary || "").trim();
-    const ok = confirm(
-      `Skip "${what}" for this week?\n\n` +
-      "The event stays on the schedule (with a ⚠️ prefix and crossed out) " +
-      "so you remember it was on the calendar — and it returns automatically " +
-      "next week."
-    );
-    if (!ok) return;
-    this._actionLoading = true; this._render();
-    try {
-      this._actionResult = await this._hass.callWS({
-        type: "katja_schedule/skip_week",
-        event_id: ev._eventId,
-      });
-      this._flashToast("Skipped this week");
-      // Trigger a re-fetch so the prefixed/strikethrough form shows up.
-      this._lastFetch = 0;
-      this._closeDetail();
-      this._fetchEvents();
-    } catch (e) {
-      this._actionResult = { ok: false, error: e.message };
-    }
-    this._actionLoading = false; this._render();
+  // ====================== HIDE MENU (2026-09-23) ======================
+  // "✕ Hide…" on the event-detail modal opens an in-modal menu instead of
+  // a confirm() dialog — the same three doors the web sheet and iOS
+  // offer (docs/hide-menu-and-rule-expiry.md §2):
+  //   ✕ Hide this one              → katja_schedule/hide_event, no confirm
+  //   ⊘ Hide every “<title>”       → exact-title pruning rule
+  //   ⊘ Hide anything containing…  → contains pruning rule, editable words
+  // The two rule doors preview what they'd hide (preview_pruning_rule)
+  // and end in a summary step before add_pruning_rule runs. "Skip this
+  // week" was removed with this menu (Ken, 2026-09-23: "it doesn't
+  // really add any value"); the WS command is gone from the integration.
+
+  _dropHideMenu() {
+    if (this._hideMenu?.timer) clearTimeout(this._hideMenu.timer);
+    this._hideMenu = null;
   }
 
-  // Hide straight from the detail modal — web-app parity (2026-06-05):
-  // previously only Skip was offered here, so hiding a normal event meant
-  // opening the review queue. Confirms (this isn't a one-week skip), then
-  // routes through the same WS hide command the inline review bar uses.
-  async _hideEventFromDetail(ev) {
-    if (!this._hass || !ev?._eventId) return;
+  _openHideMenu(ev) {
+    if (!ev?._eventId) return;
+    this._dropHideMenu();
+    this._hideMenu = {step: "choose"};
+    this._render();
+  }
+
+  /** Whether a standing rule makes sense for this row: flights, drive
+   *  rows, manual rows and rows without an overlay id only get "Hide
+   *  this one". Mirrors the web sheet's gating. */
+  _hideRuleEligible(ev) {
+    const s = (ev?.summary || "").trim();
+    return !!ev?._eventId && !this._isFlight(s) && !this._isDrive(s)
+      && ev._status !== "manual";
+  }
+
+  /** Same heuristic as templates/schedule.html suggestPattern: drop a
+   *  trailing "(…)" and trailing numbers, collapse whitespace. Errs
+   *  toward keeping more of the title — the words stay editable. */
+  _suggestPattern(what) {
+    let s = (what || "").trim();
+    s = s.replace(/\s+\([^)]*\)\s*$/, "");
+    s = s.replace(/\s+\d+\s*$/, "");
+    s = s.replace(/\s+/g, " ").trim();
+    return s;
+  }
+
+  /** The day before the next 08-15, in Pacific dates — the "end of
+   *  school year" quick pick for a rule's `until`. */
+  _endOfSchoolYearIso() {
+    const now = this._pacificNow();
+    const today = this._fmt(now);
+    let y = now.getFullYear();
+    let start = `${y}-08-15`;
+    if (start <= today) { y += 1; start = `${y}-08-15`; }
+    const d = new Date(Date.UTC(y, 7, 15) - 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+
+  _openHideRuleStep(mode) {
+    const ev = this._detailEvent;
+    if (!ev || !this._hideRuleEligible(ev)) return;
     const what = (ev.summary || "").trim();
-    const ok = confirm(
-      `Hide "${what}"?\n\n` +
-      "It's removed from the schedule and won't come back on future " +
-      "refreshes. Use Skip this week instead if it's only off for one week."
-    );
-    if (!ok) return;
+    this._dropHideMenu();
+    this._hideMenu = {
+      step: "rule",
+      mode: mode === "exact" ? "exact" : "contains",
+      pattern: mode === "exact" ? what : this._suggestPattern(what),
+      scope: ev._calendarLabel ? "this" : "any",
+      until: "",          // "" = forever | "eosy" | "custom"
+      untilCustom: "",
+      reason: "",
+      preview: null, loading: false, error: null, hint: "",
+      seq: 0, timer: null,
+    };
+    this._render();
+    this._scheduleHidePreview();
+  }
+
+  _hideMenuBack() {
+    const m = this._hideMenu;
+    if (!m) return;
+    if (m.step === "confirm") { m.step = "rule"; m.error = null; }
+    else if (m.step === "rule") { this._dropHideMenu(); this._hideMenu = {step: "choose"}; }
+    else this._dropHideMenu();
+    this._render();
+  }
+
+  // "Hide this one": immediate, no confirm — the label carries the
+  // consequence. Routes through the same WS command the inline review
+  // bar uses, so the toast/refresh conventions match.
+  async _hideThisOne() {
+    const ev = this._detailEvent;
+    if (!this._hass || !ev?._eventId) return;
+    this._dropHideMenu();
     await this._hideCalendarEvent(ev._eventId);
     this._closeDetail();
   }
 
-  // Mirror of the above for an already-hidden row.
+  /** Resolved `until` for the current menu state ("" = forever). */
+  _hideRuleUntil() {
+    const m = this._hideMenu;
+    if (!m) return "";
+    if (m.until === "eosy") return this._endOfSchoolYearIso();
+    if (m.until === "custom") return (m.untilCustom || "").trim();
+    return "";
+  }
+
+  /** The rule body both WS commands take — `until` only when set. */
+  _hideRuleBody() {
+    const m = this._hideMenu, ev = this._detailEvent;
+    const body = {
+      pattern: (m?.pattern || "").trim(),
+      match_mode: m?.mode === "exact" ? "exact" : "contains",
+      sources: (m?.scope === "this" && ev?._calendarLabel) ? [ev._calendarLabel] : [],
+    };
+    const until = this._hideRuleUntil();
+    if (until) body.until = until;
+    return body;
+  }
+
+  _hideRuleCanContinue() {
+    const m = this._hideMenu;
+    if (!m || m.step !== "rule" || m.loading) return false;
+    const body = this._hideRuleBody();
+    if (!body.pattern) return false;
+    if (m.until === "custom" && !body.until) return false;
+    return !!m.preview;
+  }
+
+  _scheduleHidePreview() {
+    const m = this._hideMenu;
+    if (!m || m.step !== "rule") return;
+    if (m.timer) clearTimeout(m.timer);
+    m.timer = setTimeout(() => { m.timer = null; this._refreshHidePreview(); }, 250);
+  }
+
+  async _refreshHidePreview() {
+    const m = this._hideMenu;
+    if (!m || m.step !== "rule" || !this._hass) return;
+    const body = this._hideRuleBody();
+    m.preview = null; m.error = null; m.hint = "";
+    if (!body.pattern) {
+      m.loading = false; m.hint = "Enter the words to match.";
+      this._updateHidePreviewBox(); return;
+    }
+    if (m.until === "custom" && !body.until) {
+      m.loading = false; m.hint = "Pick the last date this rule should cover.";
+      this._updateHidePreviewBox(); return;
+    }
+    m.loading = true;
+    this._updateHidePreviewBox();
+    const seq = ++m.seq;
+    try {
+      const r = await this._hass.callWS({type: "katja_schedule/preview_pruning_rule", ...body});
+      if (this._hideMenu !== m || seq !== m.seq) return;   // stale response
+      if (!r || r.ok === false) throw new Error((r && r.error) || "preview failed");
+      m.preview = r;
+    } catch (e) {
+      if (this._hideMenu !== m || seq !== m.seq) return;
+      m.error = (e && e.message) || "preview failed";
+    }
+    m.loading = false;
+    this._updateHidePreviewBox();
+  }
+
+  // Targeted DOM update so a preview landing mid-keystroke never
+  // re-renders the whole shadow root (which would drop focus + caret
+  // from the pattern input). Only the preview box and the Continue
+  // button's disabled state change.
+  _updateHidePreviewBox() {
+    if (!this.shadowRoot) return;
+    const box = this.shadowRoot.querySelector(".hm-preview");
+    if (box) box.outerHTML = this._renderHidePreviewBox();
+    const btn = this.shadowRoot.querySelector(".hm-continue");
+    if (btn) btn.disabled = !this._hideRuleCanContinue();
+  }
+
+  _hideRuleContinue() {
+    const m = this._hideMenu;
+    if (!this._hideRuleCanContinue()) return;
+    m.step = "confirm"; m.error = null;
+    this._render();
+  }
+
+  _hideRuleSentence() {
+    const m = this._hideMenu, body = this._hideRuleBody();
+    const who = body.sources.length ? `from ${body.sources[0]}` : "from any calendar";
+    const when = body.until ? `for events dated on or before ${body.until}` : "forever";
+    return m.mode === "exact"
+      ? `Hide every event titled “${body.pattern}” ${who}, ${when}.`
+      : `Hide every event whose title contains “${body.pattern}” ${who}, ${when}.`;
+  }
+
+  async _createHideRule() {
+    const m = this._hideMenu, ev = this._detailEvent;
+    if (!m || m.step !== "confirm" || m.loading || !ev || !this._hass) return;
+    const body = this._hideRuleBody();
+    if (!body.pattern) return;
+    const reason = (m.reason || "").trim();
+    if (reason) body.reason = reason;
+    // The row being looked at is hidden even if it's curated — otherwise
+    // "Hide every X" leaves today's X on screen and reads as broken.
+    if (ev._eventId) body.also_hide_event_id = ev._eventId;
+    m.loading = true; m.error = null;
+    this._render();
+    try {
+      const r = await this._hass.callWS({type: "katja_schedule/add_pruning_rule", ...body});
+      if (!r || r.ok === false) throw new Error((r && r.error) || "rule failed");
+      const n = r.hidden_count || 0;
+      this._flashToast(`Hid ${n} · rule “${r.pattern || body.pattern}”`);
+      this._lastFetch = 0;
+      this._closeDetail();
+      this._fetchEvents();
+    } catch (e) {
+      if (this._hideMenu !== m) return;
+      m.loading = false;
+      m.error = (e && e.message) || "Couldn't create the rule";
+      this._render();
+    }
+  }
+
+  _wireHideMenu() {
+    const root = this.shadowRoot?.querySelector(".hide-menu");
+    const m = this._hideMenu;
+    if (!root || !m) return;
+    const q = (sel) => root.querySelector(sel);
+    q(".hm-back")?.addEventListener("click", () => this._hideMenuBack());
+    q(".hm-hide-one")?.addEventListener("click", () => this._hideThisOne());
+    q(".hm-hide-exact")?.addEventListener("click", () => this._openHideRuleStep("exact"));
+    q(".hm-hide-contains")?.addEventListener("click", () => this._openHideRuleStep("contains"));
+    // Text inputs update state without a full re-render (see
+    // _updateHidePreviewBox); the value is also restored by _render's
+    // focus/caret snapshot if something else repaints meanwhile.
+    q('[data-hm-field="pattern"]')?.addEventListener("input", (e) => {
+      m.pattern = e.target.value; this._scheduleHidePreview();
+    });
+    q('[data-hm-field="pattern"]')?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); this._hideRuleContinue(); }
+    });
+    q('[data-hm-field="reason"]')?.addEventListener("input", (e) => { m.reason = e.target.value; });
+    q('[data-hm-field="untilCustom"]')?.addEventListener("input", (e) => {
+      m.untilCustom = e.target.value; this._scheduleHidePreview();
+    });
+    // Radio pills change layout (the date input appears for "a date"),
+    // so they re-render; nothing text-editable has focus at that point.
+    root.querySelectorAll('input[name="hm-scope"]').forEach(r => r.addEventListener("change", (e) => {
+      m.scope = e.target.value; this._render(); this._scheduleHidePreview();
+    }));
+    root.querySelectorAll('input[name="hm-until"]').forEach(r => r.addEventListener("change", (e) => {
+      m.until = e.target.value; this._render();
+      if (m.until === "custom") this.shadowRoot.querySelector('[data-hm-field="untilCustom"]')?.focus();
+      this._scheduleHidePreview();
+    }));
+    q(".hm-continue")?.addEventListener("click", () => this._hideRuleContinue());
+    q(".hm-create")?.addEventListener("click", () => this._createHideRule());
+  }
+
+  _renderHidePreviewBox() {
+    const m = this._hideMenu;
+    if (!m) return "";
+    if (m.hint) return `<div class="hm-preview none">${_esc(m.hint)}</div>`;
+    if (m.loading) return `<div class="hm-preview none">Checking what this would hide…</div>`;
+    if (m.error) return `<div class="hm-preview broad">Couldn't preview (${_esc(m.error)}). Try again.</div>`;
+    const p = m.preview;
+    if (!p) return `<div class="hm-preview none">Checking what this would hide…</div>`;
+    const n = p.upcoming || 0;
+    if (!n) return `<div class="hm-preview none">Nothing upcoming matches right now. The rule still applies to future events.</div>`;
+    const sample = (p.sample || []).slice(0, 8);
+    const items = sample.map(s =>
+      `<li><strong>${_esc(s.date || "")}</strong>${s.time ? ` · ${_esc(s.time)}` : ""} — ${_esc(s.what || "")}</li>`).join("");
+    const more = n > sample.length ? `<li>… and ${n - sample.length} more</li>` : "";
+    const broad = p.broad
+      ? `<div class="hm-broad">⚠️ This looks broad — it would hide a large share of what's coming up. Narrow it if that's not intended.</div>` : "";
+    return `<div class="hm-preview${p.broad ? " broad" : ""}">${broad}<span class="hm-count">${n}</span> upcoming event${n === 1 ? "" : "s"} will be hidden:<ul>${items}${more}</ul></div>`;
+  }
+
+  _renderHideMenu(ev) {
+    const m = this._hideMenu;
+    const what = (ev.summary || "").trim();
+    const dis = m.loading ? " disabled" : "";
+    if (m.step === "choose") {
+      const ruleOk = this._hideRuleEligible(ev);
+      return `<div class="hide-menu hm-choose">
+        <div class="hm-title">What do you want to do with “${_esc(what)}”?</div>
+        <button class="hm-option hm-hide-one"${dis}>
+          <span class="hm-option-label">✕ Hide this one</span>
+          <span class="hm-option-hint">Takes this occurrence off the board. Others still show. Reveal it later with 🗑.</span>
+        </button>
+        ${ruleOk ? `<button class="hm-option hm-hide-exact"${dis}>
+          <span class="hm-option-label">⊘ Hide every “${_esc(what)}”</span>
+          <span class="hm-option-hint">Every event with exactly this title, now and on every future refresh. You'll confirm first.</span>
+        </button>
+        <button class="hm-option hm-hide-contains"${dis}>
+          <span class="hm-option-label">⊘ Hide anything containing…</span>
+          <span class="hm-option-hint">You choose the words. You'll see what matches and confirm first.</span>
+        </button>` : ""}
+        <div class="hm-buttons"><button class="hm-back">← Back</button></div>
+      </div>`;
+    }
+    if (m.step === "rule") {
+      const cal = (ev._calendarLabel || "").trim();
+      const eosy = this._endOfSchoolYearIso();
+      const pill = (name, value, label, on) =>
+        `<label class="hm-pill${on ? " on" : ""}"><input type="radio" name="${name}" value="${_esc(value)}"${on ? " checked" : ""}> ${_esc(label)}</label>`;
+      const scopeRow = cal
+        ? `<div class="hm-row"><span class="hm-label">From</span><span class="hm-pills">
+            ${pill("hm-scope", "this", cal, m.scope === "this")}
+            ${pill("hm-scope", "any", "any calendar", m.scope !== "this")}
+          </span></div>` : "";
+      return `<div class="hide-menu hm-rule">
+        <div class="hm-title">${m.mode === "exact" ? `Hide every “${_esc(what)}”` : "Hide anything containing…"}</div>
+        ${m.mode === "exact"
+          ? `<div class="hm-pattern-fixed">${_esc(what)}</div>`
+          : `<input type="text" class="hm-input" data-hm-field="pattern" value="${_esc(m.pattern || "")}" autocomplete="off" spellcheck="false" aria-label="Words to match in event titles">`}
+        ${scopeRow}
+        <div class="hm-row"><span class="hm-label">Until</span><span class="hm-pills">
+          ${pill("hm-until", "", "forever", !m.until)}
+          ${pill("hm-until", "eosy", `end of school year (${eosy})`, m.until === "eosy")}
+          ${pill("hm-until", "custom", "a date", m.until === "custom")}
+          ${m.until === "custom" ? `<input type="date" class="hm-input hm-date" data-hm-field="untilCustom" value="${_esc(m.untilCustom || "")}" aria-label="Hide events dated on or before">` : ""}
+        </span></div>
+        <div class="hm-row"><span class="hm-label">Why</span>
+          <input type="text" class="hm-input" data-hm-field="reason" value="${_esc(m.reason || "")}" placeholder="optional, for your records" autocomplete="off">
+        </div>
+        ${this._renderHidePreviewBox()}
+        <div class="hm-buttons">
+          <button class="hm-back">← Back</button>
+          <button class="hm-continue"${this._hideRuleCanContinue() ? "" : " disabled"}>Continue →</button>
+        </div>
+      </div>`;
+    }
+    // confirm
+    const n = (m.preview && m.preview.upcoming) || 0;
+    const count = n
+      ? `${n} upcoming event${n === 1 ? "" : "s"} will disappear from the board.`
+      : "Nothing upcoming matches right now. The rule still applies to future events.";
+    return `<div class="hide-menu hm-confirm">
+      <div class="hm-title">Create this rule?</div>
+      <p class="hm-summary">${_esc(this._hideRuleSentence())}</p>
+      <div class="hm-preview${n ? "" : " none"}">${_esc(count)}</div>
+      ${m.error ? `<div class="hm-error">${_esc(m.error)}</div>` : ""}
+      <div class="hm-buttons">
+        <button class="hm-back"${dis}>← Back</button>
+        <button class="hm-create"${dis}>${m.loading ? "⏳ Creating…" : (n ? `⊘ Create rule and hide ${n}` : "⊘ Create rule")}</button>
+      </div>
+    </div>`;
+  }
+
+  // Unhide straight from the detail modal — an already-hidden row gets a
+  // single "↩ Unhide" button, no menu (nothing to choose between).
   async _unhideEventFromDetail(ev) {
     if (!this._hass || !ev?._eventId) return;
     await this._unhideCalendarEvent(ev._eventId);
@@ -1845,7 +2156,7 @@ class KatjaScheduleCard extends HTMLElement {
 
     const seamClasses = Array.from(this._seam).map(s => ` seam-${s}`).join("");
     // fr-2026-05-19 HA-parity: transient "Schedule updated" toast
-    // after any successful WS mutation (star, skip-week, review-
+    // after any successful WS mutation (star, hide-menu, review-
     // queue actions). Mirrors the web app's auto-reload pill — the
     // card refetches immediately so it's a confirmation toast, not
     // a 4.5s reload countdown.
@@ -1867,6 +2178,13 @@ class KatjaScheduleCard extends HTMLElement {
     } else {
       titleHtml = `<span class="title">${_esc(this._config.title || "Family Schedule")}</span>`;
     }
+    // The whole shadow root is rebuilt below. If a hide-menu text input
+    // has focus (the 60s tick, a fetch or a toast can repaint mid-typing)
+    // remember which field and where the caret is; the value itself is
+    // re-rendered from this._hideMenu, which the input handlers keep
+    // current on every keystroke.
+    const focusedHm = this.shadowRoot.activeElement?.getAttribute?.("data-hm-field") || "";
+    const hmSel = focusedHm ? [this.shadowRoot.activeElement.selectionStart, this.shadowRoot.activeElement.selectionEnd] : null;
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
       <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
@@ -2037,8 +2355,15 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
-    this.shadowRoot.querySelector(".skip-week-btn")?.addEventListener("click", () => this._skipThisWeek(this._detailEvent));
-    this.shadowRoot.querySelector(".hide-event-btn")?.addEventListener("click", () => this._hideEventFromDetail(this._detailEvent));
+    this.shadowRoot.querySelector(".hide-event-btn")?.addEventListener("click", () => this._openHideMenu(this._detailEvent));
+    this._wireHideMenu();
+    if (focusedHm) {
+      const el = this.shadowRoot.querySelector(`[data-hm-field="${focusedHm}"]`);
+      if (el) {
+        el.focus();
+        try { if (hmSel && hmSel[0] != null) el.setSelectionRange(hmSel[0], hmSel[1]); } catch (e) { /* date inputs don't support ranges */ }
+      }
+    }
     this.shadowRoot.querySelector(".unhide-event-btn")?.addEventListener("click", () => this._unhideEventFromDetail(this._detailEvent));
     this.shadowRoot.querySelector(".modal-star")?.addEventListener("click", () => this._toggleStar(this._detailEvent));
     // fr-2026-05-11-b: inline Accept/Reject on the event-detail sheet.
@@ -2280,24 +2605,7 @@ class KatjaScheduleCard extends HTMLElement {
     const hasAddress = this._hasAddress(ev), hasArrow = this._hasArrow(ev);
     const color = ev._color || "#888";
 
-    // Skip-this-week — only meaningful for accepted overlay events that
-    // haven't been skipped/cancelled already. Mirrors the web app's flow.
-    const flagged = this._isFlagged(ev);
     const status = ev._status || "";
-    const isAccepted = !!ev._eventId && !flagged
-      && status !== "new" && status !== "changed"
-      && status !== "conflict" && status !== "orphan";
-    // Keep in agreement with the web's isSkippable and iOS
-    // EventDetailSheet.eventIsSkippable — same rule, three languages
-    // (bug-ios-20260726-082159: the button rendered on a one-off flight
-    // and a hotel). Flights and multi-day stays are structurally
-    // one-off: "skip this week" stamps a permanent SKIPPED label on
-    // something that has no next week.
-    const skipEligible = isAccepted && !isFlight && !ev._dtEnd;
-    let skipSection = "";
-    if (skipEligible) {
-      skipSection = `<button class="skip-week-btn" ${this._actionLoading?"disabled":""}>⚠️ Skip this week</button>`;
-    }
 
     // fr-2026-05-11-b: inline Accept/Reject affordance when this event
     // has a pending agent proposal or a pending calendar diff. Mirrors
@@ -2343,7 +2651,9 @@ class KatjaScheduleCard extends HTMLElement {
       hideSection = `<button class="unhide-event-btn" ${this._actionLoading?"disabled":""}>↩ Unhide</button>`;
     } else if (evId && !pp && status !== "new" && status !== "changed"
                && status !== "conflict" && status !== "orphan") {
-      hideSection = `<button class="hide-event-btn" ${this._actionLoading?"disabled":""}>✕ Hide</button>`;
+      // Opens the in-modal hide menu (this one / every “X” / containing…)
+      // — see _renderHideMenu. No confirm() dialog on this path any more.
+      hideSection = `<button class="hide-event-btn" ${this._actionLoading?"disabled":""}>✕ Hide…</button>`;
     }
 
     // Recheck section. Flight events get TWO affordances side-by-side
@@ -2502,7 +2812,7 @@ class KatjaScheduleCard extends HTMLElement {
             <button class="modal-close">✕</button>
           </div>
           ${pendingBanner}
-          <div class="modal-body">
+          <div class="modal-body">${this._hideMenu ? this._renderHideMenu(ev) : `
             <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
             ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(description)}</span></div>` : ""}
@@ -2511,8 +2821,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${recheckSection}
             ${resultSection}
             ${actionSection}
-            ${skipSection}
-            ${hideSection}
+            ${hideSection}`}
           </div>
         </div>
       </div>`;
@@ -3112,6 +3421,7 @@ class KatjaScheduleCard extends HTMLElement {
       _label: ev.who || "",
       _status: ev.status || "",
       _eventId: ev.event_id || "",
+      _calendarLabel: ev.calendar_label || "",
       _starred: true,
       _dtEnd: dtEnd,
       _recurringEventId: ev.recurring_event_id || "",
@@ -4367,12 +4677,45 @@ class KatjaScheduleCard extends HTMLElement {
 
       /* Recheck */
       .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
-      .skip-week-btn { display: block; width: 100%; margin-top: 12px; padding: 12px; border: 1px solid #E08890; border-radius: var(--radius-sm); background: rgba(255,199,206,0.15); color: #E08890; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
-      .skip-week-btn:hover { background: rgba(255,199,206,0.25); }
-      .skip-week-btn:disabled { opacity: 0.5; cursor: wait; }
       .hide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .hide-event-btn:hover { background: rgba(139,46,46,0.30); }
       .hide-event-btn:disabled { opacity: 0.5; cursor: wait; }
+      /* Hide menu (2026-09-23) — in-modal replacement for Skip + confirm()
+         Hide. Colours are the .hide-event-btn reds so it reads the same on
+         the dark HA theme; text sits on the theme's own surface. */
+      .hide-menu { font-family: var(--font); font-size: 14px; line-height: 1.4; color: var(--text, inherit); }
+      .hm-title { font-size: 15px; font-weight: 700; margin: 2px 0 12px; }
+      .hm-option { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-family: var(--font); cursor: pointer; }
+      .hm-option:hover { background: rgba(139,46,46,0.30); }
+      .hm-option:disabled { opacity: 0.5; cursor: wait; }
+      .hm-option-label { display: block; font-size: 14px; font-weight: 700; }
+      .hm-option-hint { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; color: var(--muted); }
+      .hm-pattern-fixed { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; margin-bottom: 8px; }
+      .hm-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: inherit; font-family: var(--font); font-size: 14px; }
+      .hm-input:focus { outline: 2px solid #FF8E8E; outline-offset: 1px; }
+      .hm-date { width: auto; margin-top: 6px; }
+      .hm-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+      .hm-row .hm-input { flex: 1 1 160px; }
+      .hm-label { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; min-width: 60px; padding-top: 6px; }
+      .hm-pills { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 200px; }
+      .hm-pill { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; cursor: pointer; user-select: none; }
+      .hm-pill input { margin: 0; accent-color: #FF8E8E; }
+      .hm-pill.on { border-color: #FF8E8E; background: rgba(139,46,46,0.18); color: #FF8E8E; font-weight: 600; }
+      .hm-preview { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-size: 13px; }
+      .hm-preview.none { background: rgba(140,140,140,0.15); color: var(--muted); }
+      .hm-preview.broad { background: rgba(224,160,32,0.18); color: #E0A020; }
+      .hm-preview ul { margin: 6px 0 0; padding-left: 18px; }
+      .hm-preview li { margin: 2px 0; }
+      .hm-count { font-weight: 700; }
+      .hm-broad { margin-bottom: 6px; font-weight: 600; }
+      .hm-summary { margin: 0 0 8px; font-size: 14px; }
+      .hm-error { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(255,100,100,0.1); color: #FF6B6B; font-size: 13px; }
+      .hm-buttons { display: flex; gap: 8px; margin-top: 14px; }
+      .hm-buttons button { flex: 1; padding: 11px 12px; border-radius: var(--radius-sm); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .hm-buttons .hm-back { border: 1px solid var(--border); background: transparent; color: var(--muted); }
+      .hm-buttons .hm-continue, .hm-buttons .hm-create { border: 1px solid #8B2E2E; background: rgba(139,46,46,0.18); color: #FF8E8E; }
+      .hm-buttons .hm-continue:hover, .hm-buttons .hm-create:hover { background: rgba(139,46,46,0.30); }
+      .hm-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
       .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: rgba(46,139,87,0.18); color: #7BD7A6; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .unhide-event-btn:hover { background: rgba(46,139,87,0.30); }
       .unhide-event-btn:disabled { opacity: 0.5; cursor: wait; }
