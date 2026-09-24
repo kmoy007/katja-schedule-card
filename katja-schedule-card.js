@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.70.0";
+const CARD_VERSION = "0.70.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -860,6 +860,9 @@ class KatjaScheduleCard extends HTMLElement {
             // "Source: <calendar_label>" line from calendar.py — the hide
             // menu scopes a new rule to this calendar by default.
             _calendarLabel: meta.source || "",
+            // "Kind: school" (integration 0.25.1+) — the hide menu defaults
+            // a school calendar's rule to "until end of school year".
+            _calendarKind: meta.kind || "",
             // fr-2026-05-19 HA-parity: surface multi-day end + star
             // state so downstream rendering can fan the event across
             // every spanned day and show per-row star indicators.
@@ -1001,7 +1004,7 @@ class KatjaScheduleCard extends HTMLElement {
       // fr-2026-05-19 HA-parity sweep so the card can fan multi-day
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "status" || k === "where" || k === "flight"
-          || k === "source" || k === "eventid" || k === "dtend" || k === "starred"
+          || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "recurringeventid") {
         out[k] = m[2].trim();
       }
@@ -1745,7 +1748,9 @@ class KatjaScheduleCard extends HTMLElement {
       mode: mode === "exact" ? "exact" : "contains",
       pattern: mode === "exact" ? what : this._suggestPattern(what),
       scope: ev._calendarLabel ? "this" : "any",
-      until: "",          // "" = forever | "eosy" | "custom"
+      // School-looking calendars (server heuristic, "Kind: school") default
+      // to the end of the school year; everything else to forever.
+      until: ev._calendarKind === "school" ? "eosy" : "",   // "" = forever | "eosy" | "custom"
       untilCustom: "",
       reason: "",
       preview: null, loading: false, error: null, hint: "",
@@ -3422,6 +3427,7 @@ class KatjaScheduleCard extends HTMLElement {
       _status: ev.status || "",
       _eventId: ev.event_id || "",
       _calendarLabel: ev.calendar_label || "",
+      _calendarKind: ev.calendar_kind || "",
       _starred: true,
       _dtEnd: dtEnd,
       _recurringEventId: ev.recurring_event_id || "",
