@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.70.1";
+const CARD_VERSION = "0.71.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1149,6 +1149,13 @@ class KatjaScheduleCard extends HTMLElement {
   // makes sense for any Brentwood-adjacent airport in this set; the
   // user picks home or work and the card routes home→airport
   // (outbound) or airport→home (inbound) per the flight pair.
+  // Who the pickup chips offer. Fourth copy of this list in the codebase
+  // (app.PICKUP_DRIVERS, the agent's offer_choices, the tool's input_schema,
+  // here) and the card crosses a repo boundary, so it is drift-tested in
+  // tests/test_pickup_manual.py rather than trusted to memory — the same
+  // deal as the airport table below.
+  static PICKUP_DRIVERS = ["Katja", "Ken"];
+
   static _LA_AIRPORT_ADDRESSES = {
     LAX: "1 World Way, Los Angeles, CA 90045",
     BUR: "2627 N Hollywood Way, Burbank, CA 91505",
@@ -1360,8 +1367,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._theme = THEMES[this._defaultTheme] ? this._defaultTheme : "dark";
     this._render();
   }
-  _openDetail(ev) { this._detailEvent = ev; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
-  _closeDetail() { this._detailEvent = null; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _openDetail(ev) { this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _closeDetail() { this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
@@ -1602,6 +1609,44 @@ class KatjaScheduleCard extends HTMLElement {
       this._recheckResult = await this._hass.callWS(msg);
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
     this._recheckLoading = false; this._render();
+  }
+
+  // Settle "who is collecting them?" from the wall card. The judgement is
+  // the only thing this contributes — every minute in the reply is computed
+  // server-side by flight_recipe.plan_pickup, the same function the chat
+  // agent and the web sheet call. Do not do arithmetic here.
+  async _planPickup(ev, outcome, driver) {
+    if (!this._hass || !ev?._eventId) return;
+    this._pickupLoading = true; this._pickupResult = null; this._render();
+    try {
+      const res = await this._hass.callWS({
+        type: "katja_schedule/plan_pickup",
+        event_id: ev._eventId, outcome, driver: driver || "",
+      });
+      if (res && res.ok === false) throw new Error(res.error || "unknown");
+      if (res && res.pickup) {
+        let text = res.already_planned
+          ? `Already settled: ${res.pickup.time} — ${res.pickup.what}. Nothing new was queued.`
+          : `${res.pickup.time} — ${res.pickup.what}. Curbside is ${res.wait_min} min after landing. It is waiting in Review.`;
+        let bad = false;
+        // A drive built on the flat fallback must not read like a good one.
+        if (res.lookup_ok === false) {
+          bad = true;
+          text += " Warning: the drive time is a flat estimate — the traffic lookup failed. Recheck before leaving.";
+        } else if (res.traffic_basis && res.traffic_basis !== "pessimistic") {
+          bad = true;
+          text += res.traffic_basis === "typical"
+            ? " Warning: typical traffic only, no pessimistic estimate. Allow extra."
+            : " Warning: no traffic data at all behind this drive. Allow extra.";
+        }
+        this._pickupResult = { text, bad };
+      } else {
+        this._pickupResult = { text: "Noted on the arrival. You won't be asked again.", bad: false };
+      }
+    } catch (e) {
+      this._pickupResult = { text: "Could not settle the pickup: " + e.message, bad: true };
+    }
+    this._pickupLoading = false; this._render();
   }
 
   async _sendAgentAction(message) {
@@ -2360,6 +2405,8 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
+    this.shadowRoot.querySelectorAll(".pickup-btn").forEach(btn => btn.addEventListener(
+      "click", () => this._planPickup(this._detailEvent, btn.dataset.outcome, btn.dataset.driver || "")));
     this.shadowRoot.querySelector(".hide-event-btn")?.addEventListener("click", () => this._openHideMenu(this._detailEvent));
     this._wireHideMenu();
     if (focusedHm) {
@@ -2669,6 +2716,32 @@ class KatjaScheduleCard extends HTMLElement {
     // "from LAX to:").
     let recheckSection = "";
     const flightInfo = isFlight ? this._flightAirportInfo(ev) : null;
+    // bug-20260925-113137. The chat agent only asks "who is collecting
+    // them?" inside a chat turn, so an arrival that arrived by calendar
+    // sync was never asked about — and the card is the surface the
+    // household actually walks past. "inbound" is exactly "the destination
+    // is one of the household's airports", which is where a pickup is a
+    // drive that starts at this house.
+    const pickupOwns = !!(flightInfo && flightInfo.direction === "inbound"
+                          && ev._eventId);
+    if (pickupOwns) {
+      const pr = this._pickupResult;
+      const chips = this.constructor.PICKUP_DRIVERS
+        .map(d => `<button class="pickup-btn" data-outcome="drive" data-driver="${_esc(d)}" ${this._pickupLoading?"disabled":""}>🚗 ${_esc(d)}</button>`)
+        .join("");
+      recheckSection += `
+        <div class="pickup-block">
+          <div class="pickup-q">Who is collecting them?</div>
+          <div class="pickup-hint">Curbside is the landing time plus immigration and bags. The drive is solved back from there on pessimistic traffic.</div>
+          <div class="pickup-buttons">
+            ${chips}
+            <button class="pickup-btn" data-outcome="taxi" ${this._pickupLoading?"disabled":""}>🚕 Taxi / rideshare</button>
+            <button class="pickup-btn" data-outcome="no_pickup" ${this._pickupLoading?"disabled":""}>✕ No pickup needed</button>
+          </div>
+          ${this._pickupLoading ? '<div class="pickup-result">⏳ Working it out…</div>' : ""}
+          ${pr ? `<div class="pickup-result ${pr.bad ? "bad" : ""}">${_esc(pr.text)}</div>` : ""}
+        </div>`;
+    }
     if (isFlight) {
       recheckSection = `<button class="recheck-btn recheck-flight" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Flight"}</button>`;
       if (flightInfo) {
@@ -2722,6 +2795,11 @@ class KatjaScheduleCard extends HTMLElement {
         if (!this._actionResult) {
           if (isDrive) {
             actions = `<button class="action-btn action-update" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Updating...": `✓ Update to ${_esc(r.duration_text)} (with traffic)`}</button>`;
+          } else if (pickupOwns) {
+            // The drive time above is the leg *back* from the airport,
+            // worth knowing and not a row. Building the collection is
+            // Plan pickup's job — offering both is bug-ios-20260925-132307.
+            actions = `<div class="pickup-instead">That is the drive <em>back</em> from the airport. To plan the collection, use <strong>Who is collecting them?</strong> above — it adds the airport processing time and solves the drive in the right direction.</div>`;
           } else {
             actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${_esc(r.duration_text)} drive row before this event (with traffic)`}</button>`;
           }
@@ -4731,6 +4809,15 @@ class KatjaScheduleCard extends HTMLElement {
       .origin-picker { margin-top: 14px; }
       .origin-label { font-size: 14px; font-weight: 600; color: var(--text-soft); margin-bottom: 8px; }
       .origin-buttons { display: flex; gap: 8px; margin-bottom: 6px; }
+      .pickup-block { margin-bottom: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+      .pickup-q { font-size: 16px; font-weight: 700; }
+      .pickup-hint { font-size: 12px; color: var(--muted); margin: 3px 0 10px; }
+      .pickup-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+      .pickup-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
+      .pickup-btn[disabled] { opacity: 0.5; cursor: default; }
+      .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
+      .pickup-result.bad { background: rgba(178,63,43,0.15); }
+      .pickup-instead { padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px; line-height: 1.45; color: var(--muted); }
       .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
       .origin-btn:hover { border-color: var(--accent); background: var(--accent-bg); }
       .origin-btn:disabled { opacity: 0.5; cursor: wait; }
