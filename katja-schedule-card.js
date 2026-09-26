@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.71.1";
+const CARD_VERSION = "0.72.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -595,10 +595,15 @@ const THEMES = {
   },
 };
 
+// One hue per household member — the SAME values as the web app's
+// static/css/tokens.css (--p-katja, --p-caleb, …) so a person reads the
+// same colour on the wall display and on a phone (Ken, 2026-09-26).
+// tests/test_ha_card_person_colors.py fails if the two drift apart.
 const PERSON_COLORS = {
-  katja: "#FF6B6B", ken: "#4ECDC4", caleb: "#45B7D1",
-  sam: "#96CEB4", shared: "#FFEAA7",
+  katja: "#7C3AED", caleb: "#059669", sam: "#2563EB", ken: "#0D9488",
+  kids: "#D97706", family: "#E0561B", shared: "#E0561B",
 };
+const PERSON_COLOR_OTHER = "#64748B";
 
 const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -853,7 +858,7 @@ class KatjaScheduleCard extends HTMLElement {
           const colorKey = who.split(",")[0]?.trim();
           all.push({
             ...ev,
-            _color: cal.color || PERSON_COLORS[colorKey] || PERSON_COLORS[cal.label?.toLowerCase()] || "#888",
+            _color: cal.color || PERSON_COLORS[colorKey] || PERSON_COLORS[cal.label?.toLowerCase()] || PERSON_COLOR_OTHER,
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
             _eventId: meta.eventid || "",
@@ -962,7 +967,7 @@ class KatjaScheduleCard extends HTMLElement {
         start: {dateTime: startISO},
         end: {dateTime: ""},
         description: `Where: ${args.where || ""}\nWho: ${args.who || ""}`,
-        _color: PERSON_COLORS[who] || "#888",
+        _color: PERSON_COLORS[who] || PERSON_COLOR_OTHER,
         _label: args.who || "",
         _status: "",
         _eventId: "",
@@ -3500,7 +3505,7 @@ class KatjaScheduleCard extends HTMLElement {
       location: ev.where || "",
       description: desc.join("\n"),
       start, end,
-      _color: PERSON_COLORS[colorKey] || "#888",
+      _color: PERSON_COLORS[colorKey] || PERSON_COLOR_OTHER,
       _label: ev.who || "",
       _status: ev.status || "",
       _eventId: ev.event_id || "",

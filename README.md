@@ -34,6 +34,8 @@ sensors:
 
 Calendar entity names match the family members configured in the integration.
 
+`color` is optional. Leave it out and each event is coloured by its `Who` using the card's built-in person palette (the same colours as the web app); set it and every event from that calendar takes that one colour instead.
+
 ### Single-view mode
 
 Lock a card to one view for flexible dashboard layouts:
