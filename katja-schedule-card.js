@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.71.0";
+const CARD_VERSION = "0.71.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2732,7 +2732,7 @@ class KatjaScheduleCard extends HTMLElement {
       recheckSection += `
         <div class="pickup-block">
           <div class="pickup-q">Who is collecting them?</div>
-          <div class="pickup-hint">Curbside is the landing time plus immigration and bags. The drive is solved back from there on pessimistic traffic.</div>
+          <div class="pickup-hint">Curbside is the landing time plus the time to clear the airport. The drive is solved back from there on pessimistic traffic.</div>
           <div class="pickup-buttons">
             ${chips}
             <button class="pickup-btn" data-outcome="taxi" ${this._pickupLoading?"disabled":""}>🚕 Taxi / rideshare</button>
