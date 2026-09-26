@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.72.0";
+const CARD_VERSION = "0.73.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -630,6 +630,7 @@ const RELOAD_ICON = '<svg class="reload-ico" viewBox="0 0 24 24" width="15" heig
 
 class KatjaScheduleCard extends HTMLElement {
   connectedCallback() {
+    if (!this._uxTimer) this._uxTimer = setInterval(() => this._uxFlush(), 30_000);
     // Minute-ticker for the Day View NOW line. HA re-renders the card
     // on every entity state change, but the wall display can go a
     // full minute without one — so the red NOW rule would otherwise
@@ -646,6 +647,9 @@ class KatjaScheduleCard extends HTMLElement {
     }, 60_000);
   }
   disconnectedCallback() {
+    this._uxSheetClose();
+    this._uxFlush();
+    if (this._uxTimer) { clearInterval(this._uxTimer); this._uxTimer = null; }
     if (this._nowTickerId) { clearInterval(this._nowTickerId); this._nowTickerId = null; }
     if (this._zoomTimer) { clearTimeout(this._zoomTimer); this._zoomTimer = null; }
     if (this._zoomTick) { clearInterval(this._zoomTick); this._zoomTick = null; }
@@ -654,6 +658,13 @@ class KatjaScheduleCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    // Interaction counts (fr-2026-09-26-a) — same vocabulary as the web
+    // sheet, so /metrics compares the wall card with the phone. The
+    // shadow root outlives every re-render, so one capture listener
+    // here sees each tap before the per-render handlers run.
+    this._uxQueue = [];
+    this._uxSheet = null;
+    this.shadowRoot.addEventListener("click", (e) => this._uxOnClick(e), true);
     this._config = {};
     this._hass = null;
     this._events = [];
@@ -1372,8 +1383,85 @@ class KatjaScheduleCard extends HTMLElement {
     this._theme = THEMES[this._defaultTheme] ? this._defaultTheme : "dark";
     this._render();
   }
-  _openDetail(ev) { this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
-  _closeDetail() { this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  // ---- Interaction counts (fr-2026-09-26-a) ----
+  // Counts only: an affordance slug, the kind of row, the outcome. Never
+  // a title or an id. Sent through the integration (the token stays in
+  // HA), which stamps the surface `ha-card`. An integration too old to
+  // know the command just errors, and the batch is dropped.
+  _uxLog(a, c, o) {
+    this._uxQueue.push({ a, c: c || "none", o: o || "acted" });
+    if (this._uxQueue.length >= 40) this._uxFlush();
+  }
+  _uxFlush() {
+    if (!this._hass || !this._uxQueue.length) return;
+    const events = this._uxQueue.splice(0, 50);
+    try {
+      this._hass.callWS({ type: "katja_schedule/log_interactions", events }).catch(() => {});
+    } catch (e) { /* best-effort */ }
+  }
+  _uxContext(ev) {
+    const summary = ev?.summary || "";
+    if (this._isDrive(summary)) return "drive";
+    if (!this._isFlight(summary)) return "plain";
+    const dir = this._flightAirportInfo(ev)?.direction;
+    return dir === "inbound" ? "flight-arrival" : dir === "outbound" ? "flight-departure" : "flight";
+  }
+  // One sheet visit = one `sheet` count (acted / dismissed). Something a
+  // tap opens (the Hide menu, the pickup question) stays pending until a
+  // follow-up settles it; still pending at close means `abandoned`.
+  _uxSheetOpen(ev) {
+    this._uxSheetClose();
+    const ctx = this._uxContext(ev);
+    const pending = new Set();
+    if (ctx === "flight-arrival" && ev?._eventId) pending.add("pickup.question");
+    this._uxSheet = { ctx, acted: false, pending };
+  }
+  _uxSheetClose() {
+    const s = this._uxSheet;
+    if (!s) return;
+    this._uxSheet = null;
+    s.pending.forEach(p => this._uxLog(p, s.ctx, "abandoned"));
+    this._uxLog("sheet", s.ctx, s.acted ? "acted" : "dismissed");
+  }
+  _uxOnClick(e) {
+    const s = this._uxSheet;
+    if (!s) return;
+    const origins = { "home": "home", "nz consulate": "work" };
+    const map = [
+      [".recheck-flight", () => ["sheet.flight-status"]],
+      [".recheck-drive", () => ["sheet.recheck"]],
+      [".origin-btn", el => ["drive.from-" + (origins[el.dataset.origin] || "other")]],
+      [".action-update", () => ["drive.update"]],
+      [".action-add-drive", () => ["drive.add-row"]],
+      [".pickup-btn", el => ["pickup." + (el.dataset.outcome === "drive"
+          ? (el.dataset.driver || "drive").toLowerCase().replace(/[^a-z0-9]+/g, "-")
+          : (el.dataset.outcome || "other").replace(/_/g, "-")), { settles: "pickup.question" }]],
+      [".hide-event-btn", () => ["sheet.hide", { opens: "hide.menu" }]],
+      [".hm-hide-one", () => ["hide.one", { settles: "hide.menu" }]],
+      [".hm-hide-exact", () => ["hide.exact", { settles: "hide.menu" }]],
+      [".hm-hide-contains", () => ["hide.contains", { settles: "hide.menu" }]],
+      [".hm-back", () => ["hide.back", { settles: "hide.menu" }]],
+      [".unhide-event-btn", () => ["sheet.unhide"]],
+      [".modal-star", () => ["sheet.star"]],
+      [".inline-apply", () => ["proposal.approve"]],
+      [".inline-reject", () => ["proposal.reject"]],
+      [".inline-accept-cal", () => ["review.accept"]],
+      [".inline-hide-cal", () => ["review.hide"]],
+    ];
+    for (const [sel, fn] of map) {
+      const el = e.target.closest?.(sel);
+      if (!el) continue;
+      const [a, opts] = fn(el);
+      this._uxLog(a, s.ctx, "acted");
+      s.acted = true;
+      if (opts?.opens) s.pending.add(opts.opens);
+      if (opts?.settles) s.pending.delete(opts.settles);
+      return;
+    }
+  }
+
+  _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
