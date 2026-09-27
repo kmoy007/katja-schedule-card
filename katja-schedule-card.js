@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.73.0";
+const CARD_VERSION = "0.74.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -884,6 +884,12 @@ class KatjaScheduleCard extends HTMLElement {
             // every spanned day and show per-row star indicators.
             _dtEnd: meta.dtend || "",
             _starred: meta.starred === "1",
+            // "Pickup: taxi" / "Pickup: drive:Katja" (integration
+            // 0.28.0+) — which chip the household already chose, so the
+            // card can highlight it instead of showing four identical
+            // ones. Absent on an older integration: no highlight, and
+            // the question still works.
+            _pickup: meta.pickup || "",
             _recurringEventId: meta.recurringeventid || "",
           });
         }
@@ -1021,7 +1027,7 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "recurringeventid") {
+          || k === "pickup" || k === "recurringeventid") {
         out[k] = m[2].trim();
       }
     }
@@ -1704,6 +1710,18 @@ class KatjaScheduleCard extends HTMLElement {
     this._recheckLoading = false; this._render();
   }
 
+  // "Pickup: taxi" / "Pickup: drive:Katja" → {outcome, driver}. The
+  // integration writes the line from the overlay row's `pickup` field, so
+  // this is the household's stored answer, not local state.
+  _pickupAnswer(ev) {
+    const raw = (ev?._pickup || "").trim();
+    if (!raw) return null;
+    const i = raw.indexOf(":");
+    return i === -1
+      ? { outcome: raw, driver: "" }
+      : { outcome: raw.slice(0, i).trim(), driver: raw.slice(i + 1).trim() };
+  }
+
   // Settle "who is collecting them?" from the wall card. The judgement is
   // the only thing this contributes — every minute in the reply is computed
   // server-side by flight_recipe.plan_pickup, the same function the chat
@@ -1717,6 +1735,11 @@ class KatjaScheduleCard extends HTMLElement {
         event_id: ev._eventId, outcome, driver: driver || "",
       });
       if (res && res.ok === false) throw new Error(res.error || "unknown");
+      // Move the highlight now. The card reads the answer back off the
+      // calendar entity, which only refreshes on the next 5-minute poll —
+      // waiting for that is exactly the "did my tap do anything?" gap this
+      // highlight exists to close.
+      if (ev) ev._pickup = outcome === "drive" ? `drive:${driver || ""}` : outcome;
       if (res && res.pickup) {
         let text = res.already_planned
           ? `Already settled: ${res.pickup.time} — ${res.pickup.what}. Nothing new was queued.`
@@ -2819,17 +2842,29 @@ class KatjaScheduleCard extends HTMLElement {
                           && ev._eventId);
     if (pickupOwns) {
       const pr = this._pickupResult;
+      // Which chip is already chosen. Four identical buttons told the
+      // household nothing about what they had answered, so a mis-tap was
+      // invisible and the obvious response — tapping again — looked like
+      // a no-op. The web sheet has shown this since 2026-09-26
+      // (_paintPickupAnswer in schedule.html); this is the same idea for
+      // the surface the household walks past.
+      const answer = this._pickupAnswer(ev);
+      const chipAttrs = (outcome, driver) => {
+        const mine = !!(answer && answer.outcome === outcome
+                        && (outcome !== "drive" || answer.driver === driver));
+        return `class="pickup-btn${mine ? " chosen" : ""}" aria-pressed="${mine}"`;
+      };
       const chips = this.constructor.PICKUP_DRIVERS
-        .map(d => `<button class="pickup-btn" data-outcome="drive" data-driver="${_esc(d)}" ${this._pickupLoading?"disabled":""}>🚗 ${_esc(d)}</button>`)
+        .map(d => `<button ${chipAttrs("drive", d)} data-outcome="drive" data-driver="${_esc(d)}" ${this._pickupLoading?"disabled":""}>🚗 ${_esc(d)}</button>`)
         .join("");
       recheckSection += `
         <div class="pickup-block">
-          <div class="pickup-q">Who is collecting them?</div>
+          <div class="pickup-q">${answer ? "Who is collecting them? Tap to change." : "Who is collecting them?"}</div>
           <div class="pickup-hint">Curbside is the landing time plus the time to clear the airport. The drive is solved back from there on pessimistic traffic.</div>
           <div class="pickup-buttons">
             ${chips}
-            <button class="pickup-btn" data-outcome="taxi" ${this._pickupLoading?"disabled":""}>🚕 Taxi / rideshare</button>
-            <button class="pickup-btn" data-outcome="no_pickup" ${this._pickupLoading?"disabled":""}>✕ No pickup needed</button>
+            <button ${chipAttrs("taxi")} data-outcome="taxi" ${this._pickupLoading?"disabled":""}>🚕 Taxi / rideshare</button>
+            <button ${chipAttrs("no_pickup")} data-outcome="no_pickup" ${this._pickupLoading?"disabled":""}>✕ No pickup needed</button>
           </div>
           ${this._pickupLoading ? '<div class="pickup-result">⏳ Working it out…</div>' : ""}
           ${pr ? `<div class="pickup-result ${pr.bad ? "bad" : ""}">${_esc(pr.text)}</div>` : ""}
@@ -4908,6 +4943,8 @@ class KatjaScheduleCard extends HTMLElement {
       .pickup-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
       .pickup-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
       .pickup-btn[disabled] { opacity: 0.5; cursor: default; }
+      .pickup-btn.chosen { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .pickup-btn.chosen:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
       .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
       .pickup-result.bad { background: rgba(178,63,43,0.15); }
       .pickup-instead { padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px; line-height: 1.45; color: var(--muted); }
