@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.74.0";
+const CARD_VERSION = "0.75.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -927,33 +927,24 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   /** Match a card-rendered event against the pending-proposal queue and
-   *  return {kind, id} when a proposal targets it, or null. Mirrors the
-   *  matching that renderer.merge_pending_proposals does on the web —
-   *  update/hide/accept/merge match by event_id (parsed from the
-   *  EventId: line in the calendar description); remove matches by
-   *  date + criteria; add proposals are surfaced as ghost rows
-   *  (handled separately during grouping, not here). */
+   *  return {kind, id} when a proposal targets it, or null. Everything
+   *  matches by event_id (parsed from the EventId: line in the calendar
+   *  description): update/hide/accept/merge from args.event_id, remove
+   *  from the server's `target_event_ids` — resolved by
+   *  renderer.remove_targets, the matcher the delete itself uses, so the
+   *  card never re-derives which rows a remove takes (a JS copy of it
+   *  missed `event_ids` proposals, 2026-09-28). Add proposals are
+   *  surfaced as ghost rows (handled separately during grouping). */
   _matchPendingProposal(ev) {
     const proposals = this._pendingProposals || [];
-    if (!proposals.length) return null;
     const evId = ev._eventId || "";
-    const dateStr = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
-    const summary = (ev.summary || "").toLowerCase();
-    const who = (ev._label || "").toLowerCase();
+    if (!proposals.length || !evId) return null;
     for (const p of proposals) {
       const k = p.kind, args = p.args || {};
       if (k === "update" || k === "hide" || k === "accept" || k === "merge") {
-        if (evId && (args.event_id || "") === evId) return {kind: k, id: p.id};
+        if ((args.event_id || "") === evId) return {kind: k, id: p.id};
       } else if (k === "remove") {
-        if (args.date && dateStr !== args.date) continue;
-        const wc = (args.what_contains || "").toLowerCase();
-        const ws = (args.what_starts_with || "").toLowerCase();
-        const wh = (args.who || "").toLowerCase();
-        if (wc && !summary.includes(wc)) continue;
-        if (ws && !summary.startsWith(ws)) continue;
-        if (wh && wh !== who) continue;
-        if (!wc && !ws && !wh && !args.date) continue; // tool guard requires ≥1
-        return {kind: "remove", id: p.id};
+        if ((p.target_event_ids || []).includes(evId)) return {kind: "remove", id: p.id};
       }
     }
     return null;
