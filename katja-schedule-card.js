@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.77.0";
+const CARD_VERSION = "0.78.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -902,6 +902,11 @@ class KatjaScheduleCard extends HTMLElement {
             // ones. Absent on an older integration: no highlight, and
             // the question still works.
             _pickup: meta.pickup || "",
+            // "Notes: …" (integration 0.29.0+) — the event's own
+            // commentary. The Details row used to print this whole
+            // metadata block instead, so the household read `Status:`,
+            // `Source:` and a 200-character Google event id.
+            _notes: meta.notes || "",
             _recurringEventId: meta.recurringeventid || "",
           });
         }
@@ -1029,7 +1034,7 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "pickup" || k === "recurringeventid") {
+          || k === "pickup" || k === "notes" || k === "recurringeventid") {
         out[k] = m[2].trim();
       }
     }
@@ -2771,6 +2776,10 @@ class KatjaScheduleCard extends HTMLElement {
     const date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
     const dateLabel = this._formatDateHeader(date);
     const location = ev.location || "", description = ev.description || "";
+    // NEVER render `description` — it is the integration's `Key: value`
+    // metadata block, which the card parses and the household should never
+    // see. `_notes` is the event's own commentary, pulled out of it.
+    const notes = ev._notes || "";
     const isDrive = this._isDrive(summary), isFlight = this._isFlight(summary);
     const hasAddress = this._hasAddress(ev), hasArrow = this._hasArrow(ev);
     const color = ev._color || "#888";
@@ -3035,7 +3044,7 @@ class KatjaScheduleCard extends HTMLElement {
           <div class="modal-body">${this._hideMenu ? this._renderHideMenu(ev) : `
             <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
-            ${description && description !== location ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(description)}</span></div>` : ""}
+            ${notes ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(notes)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
             ${inlineReviewSection}
             ${recheckSection}
