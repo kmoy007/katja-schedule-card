@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.76.0";
+const CARD_VERSION = "0.77.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2873,7 +2873,14 @@ class KatjaScheduleCard extends HTMLElement {
         </div>`;
     }
     if (isFlight) {
-      recheckSection = `<button class="recheck-btn recheck-flight" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Flight"}</button>`;
+      // `+=`, NOT `=`. This was an assignment, and since `pickupOwns` is
+      // only ever true for a flight, it threw away the pickup question
+      // block built immediately above it — every single time. The card
+      // has never once shown "Who is collecting them?"; the household saw
+      // Recheck Flight and a drive picker instead. Every test we had for
+      // the question scanned the source for the markup, which is present
+      // and correct, so none of them could see it being discarded.
+      recheckSection += `<button class="recheck-btn recheck-flight" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Flight"}</button>`;
       if (flightInfo) {
         const lbl = flightInfo.direction === "inbound"
           ? `Check drive time from ${flightInfo.iata} to:`
