@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.75.0";
+const CARD_VERSION = "0.76.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -605,6 +605,20 @@ const PERSON_COLORS = {
 };
 const PERSON_COLOR_OTHER = "#64748B";
 
+// The colour for one event. A known person always wins (Ken, 2026-09-29):
+// a `color:` on the calendar in the dashboard YAML used to win over
+// everything, and with the usual single-calendar setup that painted every
+// event one colour, so nobody's colour ever showed. The YAML colour now
+// only colours events with no known person; after that, a calendar
+// labelled with a person's name, then slate grey.
+function personColorFor(who, calColor, calLabel) {
+  const key = String(who || "").toLowerCase().split(",")[0].trim();
+  return PERSON_COLORS[key]
+    || calColor
+    || PERSON_COLORS[String(calLabel || "").toLowerCase().trim()]
+    || PERSON_COLOR_OTHER;
+}
+
 const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -865,11 +879,9 @@ class KatjaScheduleCard extends HTMLElement {
           // description. Parse those out so the card can color-by-person and
           // toggle-by-status without needing 5 entities.
           const meta = this._parseEventMeta(ev.description || "");
-          const who = (meta.who || cal.label || "").toLowerCase();
-          const colorKey = who.split(",")[0]?.trim();
           all.push({
             ...ev,
-            _color: cal.color || PERSON_COLORS[colorKey] || PERSON_COLORS[cal.label?.toLowerCase()] || PERSON_COLOR_OTHER,
+            _color: personColorFor(meta.who, cal.color, cal.label),
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
             _eventId: meta.eventid || "",
@@ -963,7 +975,6 @@ class KatjaScheduleCard extends HTMLElement {
       if (p.kind !== "add") continue;
       const args = p.args || {};
       if (!args.date) continue;
-      const who = (args.who || "").toLowerCase().split(",")[0]?.trim() || "";
       const [y, m, d] = args.date.split("-").map(Number);
       const t24 = this._timeTo24h(args.time || "") || "00:00:00";
       const midnightISO = this._pacificISOAtMidnight(y, m - 1, d);
@@ -975,7 +986,7 @@ class KatjaScheduleCard extends HTMLElement {
         start: {dateTime: startISO},
         end: {dateTime: ""},
         description: `Where: ${args.where || ""}\nWho: ${args.who || ""}`,
-        _color: PERSON_COLORS[who] || PERSON_COLOR_OTHER,
+        _color: personColorFor(args.who),
         _label: args.who || "",
         _status: "",
         _eventId: "",
@@ -3612,14 +3623,12 @@ class KatjaScheduleCard extends HTMLElement {
     if (dtEnd && dtEnd > date) desc.push(`DtEnd: ${dtEnd}`);
     desc.push("Starred: 1");
     if (ev.recurring_event_id) desc.push(`RecurringEventId: ${ev.recurring_event_id}`);
-    const who = (ev.who || "").toLowerCase();
-    const colorKey = who.split(",")[0]?.trim();
     return {
       summary: ev.what || "",
       location: ev.where || "",
       description: desc.join("\n"),
       start, end,
-      _color: PERSON_COLORS[colorKey] || PERSON_COLOR_OTHER,
+      _color: personColorFor(ev.who),
       _label: ev.who || "",
       _status: ev.status || "",
       _eventId: ev.event_id || "",
