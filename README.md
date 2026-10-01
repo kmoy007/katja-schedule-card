@@ -71,7 +71,7 @@ Locked views hide the header and view toggle for a clean embedded look.
 - Last sync time in header
 - Weekend day headers tinted warm
 - Sticky day headers while scrolling
-- Mon–Sun week grid in calendar view
+- Mon–Sun week grid in calendar view; tap a day for that day's full view, tap an event there for its details
 - Auto-refreshes every 5 minutes
 
 # sync test

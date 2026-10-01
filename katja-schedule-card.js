@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.78.0";
+const CARD_VERSION = "0.79.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2520,10 +2520,7 @@ class KatjaScheduleCard extends HTMLElement {
       });
     });
     this.shadowRoot.querySelectorAll("[data-day-date]").forEach(el =>
-      el.addEventListener("click", (e) => {
-        if (e.target.closest("[data-event-idx]")) return; // let event clicks through
-        this._openDayDetail(el.dataset.dayDate);
-      }));
+      el.addEventListener("click", () => this._openDayDetail(el.dataset.dayDate)));
     this.shadowRoot.querySelector(".recheck-drive")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
@@ -4013,7 +4010,8 @@ class KatjaScheduleCard extends HTMLElement {
   //   1. the date-number row,
   //   2. a multi-day bar strip — continuous spanning bars, greedily
   //      track-packed, the way the Starred D Flow view renders them,
-  //   3. the 7 day cells with single-day event chips.
+  //   3. the 7 day cells with single-day event chips,
+  //   4. over all of it, one tap target per day column.
   // Dates sit ABOVE the bars so the bars clearly belong to the week
   // beneath. The bar strip mirrors the 7-column / 3px-gap geometry of
   // the day grid so a bar lines up exactly with the columns under it.
@@ -4057,18 +4055,16 @@ class KatjaScheduleCard extends HTMLElement {
       b.track = t;
     }
     const barsHtml = bars.map(b => {
-      const idx = (this._renderedEvents || this._events || []).indexOf(b.ev);
       const cls = ["cal-mdbar"];
       if (b.continuesLeft) cls.push("continues-left");
       if (b.continuesRight) cls.push("continues-right");
       // Subtle per-event hue tint so two adjacent bars are
       // distinguishable; left accent stays the person color.
-      return `<button type="button" class="${cls.join(" ")}" data-event-idx="${idx}" `
+      return `<div class="${cls.join(" ")}" `
         + `style="grid-column:${b.colStart + 1} / ${b.colEnd + 2}; grid-row:${b.track + 1}; `
         + `border-left-color:${_esc(b.ev._color || "#888")}; `
-        + `background:${this._flowSubtle(b.ev.summary || "")};" `
-        + `title="${_esc(b.ev.summary || "")}">`
-        + `${b.continuesLeft ? "‹ " : ""}${_esc(b.ev.summary || "")}</button>`;
+        + `background:${this._flowSubtle(b.ev.summary || "")};">`
+        + `${b.continuesLeft ? "‹ " : ""}${_esc(b.ev.summary || "")}</div>`;
     }).join("");
     const barStrip = tracks.length > 0
       ? `<div class="cal-week-bars">${barsHtml}</div>`
@@ -4077,7 +4073,7 @@ class KatjaScheduleCard extends HTMLElement {
     // --- date-number row ---
     const dateRow = week.map(w => {
       const d = new Date(w.ds + "T12:00:00");
-      return `<div class="cal-datecell${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><span class="cal-date">${d.getDate()}</span></div>`;
+      return `<div class="cal-datecell${dayClass(w)}"><span class="cal-date">${d.getDate()}</span></div>`;
     }).join("");
 
     // --- single-day chip cells. Multi-day events render ONLY as bars
@@ -4100,13 +4096,7 @@ class KatjaScheduleCard extends HTMLElement {
         const pendingPrefix = pendingKind ? "⚠ " : "";
         // Single-day events are a person-colored bullet + text — no
         // filled background box (fr-2026-05-20). flagged → struck out.
-        // data-event-idx makes the chip itself a tap target so the user
-        // can open the event detail without first opening the day; the
-        // day-cell click handler skips when e.target.closest matches an
-        // event-idx element. The fallback day-tap still works for empty
-        // areas of the cell.
-        const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
-        const idxAttr = evIdx >= 0 ? ` data-event-idx="${evIdx}"` : "";
+        // Not a tap target: see the day tap targets below.
         // Deleted upstream — see `_renderEvent`. A chip is too small for
         // a REMOVED tag, so it gets the struck-through, faded treatment
         // flagged rows already use. Without this the month grid keeps
@@ -4115,9 +4105,9 @@ class KatjaScheduleCard extends HTMLElement {
         const orphanCls = calOrphan ? " cal-orphan" : "";
         const orphanStyle = (calOrphan && !fl)
           ? "opacity:0.5;text-decoration:line-through" : "";
-        return `<div class="cal-event${pendingCls}${orphanCls}"${idxAttr} style="cursor:pointer;${fl?"opacity:0.4;text-decoration:line-through":orphanStyle}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+        return `<div class="cal-event${pendingCls}${orphanCls}" style="${fl?"opacity:0.4;text-decoration:line-through":orphanStyle}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
-      return `<div class="cal-day${dayClass(w)}" data-day-date="${_esc(w.ds)}" style="cursor:pointer"><div class="cal-events">${chips}</div></div>`;
+      return `<div class="cal-day${dayClass(w)}"><div class="cal-events">${chips}</div></div>`;
     }).join("");
 
     // --- today column box: one orange outline around the whole
@@ -4128,11 +4118,21 @@ class KatjaScheduleCard extends HTMLElement {
       ? `<div class="cal-today-col" style="grid-column:${todayIdx + 1};"></div>`
       : "";
 
+    // --- day tap targets: one button per day column, laid over the
+    // date, the bars and the chips, so a tap anywhere in a day opens
+    // that day's popup. The chips and bars are too small to hit on the
+    // wall panels (Ken, 2026-09-30); every event is tappable in the
+    // popup instead. ---
+    const dayHits = week.map(w =>
+      `<button type="button" class="cal-day-hit" data-day-date="${_esc(w.ds)}" aria-label="${_esc(this._formatDateHeader(w.ds))}"></button>`
+    ).join("");
+
     return `<div class="cal-week-wrap">`
       + `<div class="cal-week cal-week-dates">${dateRow}</div>`
       + barStrip
       + `<div class="cal-week">${cellsHtml}</div>`
       + todayBox
+      + `<div class="cal-week-hits">${dayHits}</div>`
       + `</div>`;
   }
 
@@ -4514,7 +4514,15 @@ class KatjaScheduleCard extends HTMLElement {
          / chip grid each span all 7 columns. */
       .cal-week-wrap { display: grid; grid-template-columns: repeat(7, 1fr);
         column-gap: 3px; margin-bottom: 5px; padding-top: 5px;
-        border-top: 3px solid rgba(255,255,255,0.55); }
+        border-top: 3px solid rgba(255,255,255,0.55); position: relative; }
+      /* Day tap targets: a 7-column layer over the whole week, so a
+         tap anywhere in a day lands on that day's button. No column
+         gap: a gap would be a strip where a tap opens nothing, and the
+         middle of a two-day bar sits exactly on one. */
+      .cal-week-hits { position: absolute; inset: 0; display: grid;
+        grid-template-columns: repeat(7, 1fr); }
+      .cal-day-hit { border: 0; padding: 0; background: transparent;
+        cursor: pointer; }
       .cal-week-dates, .cal-week-bars, .cal-week { grid-column: 1 / -1; }
       /* Today's box: a 3px inset accent border (box-shadow, so it can't
          spill into the column gap) around the whole today column — date
@@ -4536,16 +4544,14 @@ class KatjaScheduleCard extends HTMLElement {
          band across the week. */
       .cal-week-bars { display: grid; grid-template-columns: repeat(7, 1fr);
         gap: 3px 3px; grid-auto-rows: 17px; margin-bottom: 2px; }
-      /* border:0 kills the default <button> outline (it was rendering
-         as a too-bold white box around every bar); the only border
-         is the left accent in the event's person color. */
+      /* The only border is the left accent in the event's person color. */
       .cal-mdbar { align-self: stretch; min-width: 0;
         padding: 1px 6px; border-radius: var(--radius-xs);
         border: 0; border-left: 3px solid #888;
         background: var(--event-hover); color: var(--text);
         font-size: 11px; font-weight: 600; line-height: 15px;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        text-align: left; cursor: pointer; }
+        text-align: left; }
       /* A bar that started in an earlier week / runs into a later one
          loses the corner radius (and, on the left, the accent border)
          on that edge so the segments read as one unbroken span. */
