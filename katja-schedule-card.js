@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.79.0";
+const CARD_VERSION = "0.79.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4110,12 +4110,14 @@ class KatjaScheduleCard extends HTMLElement {
       return `<div class="cal-day${dayClass(w)}"><div class="cal-events">${chips}</div></div>`;
     }).join("");
 
-    // --- today column box: one orange outline around the whole
-    // today column — date cell, bar strip slice and chip cell — set
-    // as a grid item spanning every sub-row. ---
+    // --- today column box: one accent-coloured outline around the whole
+    // today column — date cell, bar strip slice and chip cell. It is
+    // absolutely positioned inside its column's grid area, so both
+    // column lines are named: an absent end line would mean the
+    // wrapper's right edge. ---
     const todayIdx = week.findIndex(w => this._isToday(w.ds));
     const todayBox = todayIdx >= 0
-      ? `<div class="cal-today-col" style="grid-column:${todayIdx + 1};"></div>`
+      ? `<div class="cal-today-col" style="grid-column:${todayIdx + 1} / ${todayIdx + 2};"></div>`
       : "";
 
     // --- day tap targets: one button per day column, laid over the
@@ -4508,10 +4510,11 @@ class KatjaScheduleCard extends HTMLElement {
          — the tinted cell backgrounds alone weren't enough to break
          the weeks apart at a glance. */
       /* The week wrapper is itself a 7-col grid so the .cal-today-col
-         marker can be one grid item spanning every sub-row (dates +
-         bar strip + chip cells) — giving today a single continuous
-         outline box, not three stacked ones. The date row / bar strip
-         / chip grid each span all 7 columns. */
+         marker can take its left and width from one column while
+         covering every sub-row (dates + bar strip + chip cells) —
+         giving today a single continuous outline box, not three
+         stacked ones. The date row / bar strip / chip grid each span
+         all 7 columns. */
       .cal-week-wrap { display: grid; grid-template-columns: repeat(7, 1fr);
         column-gap: 3px; margin-bottom: 5px; padding-top: 5px;
         border-top: 3px solid rgba(255,255,255,0.55); position: relative; }
@@ -4527,8 +4530,13 @@ class KatjaScheduleCard extends HTMLElement {
       /* Today's box: a 3px inset accent border (box-shadow, so it can't
          spill into the column gap) around the whole today column — date
          cell, bar strip slice and chip cell — matching the boxed look
-         of today in the Starred grid. */
-      .cal-today-col { grid-row: 1 / -1; align-self: stretch;
+         of today in the Starred grid.
+         Absolutely positioned, so the grid area it names is only its
+         containing block: its own column (set inline), from the top of
+         the first row to the bottom of the wrapper. As an in-flow item
+         on "grid-row: 1 / -1" it was 0px high: the wrapper has no
+         explicit rows, so line -1 is line 1. */
+      .cal-today-col { position: absolute; inset: 0; grid-row-start: 1;
         box-shadow: inset 0 0 0 3px var(--accent);
         border-radius: var(--radius-xs); background: var(--cal-today-bg);
         pointer-events: none; }
@@ -4537,6 +4545,9 @@ class KatjaScheduleCard extends HTMLElement {
          bars clearly belong to the week beneath their dates. */
       .cal-week-dates { margin-bottom: 2px; }
       .cal-datecell { padding: 0 4px; }
+      /* Today's date sits inside the box: keep it clear of the 3px
+         border, which is drawn over the cell's own edge. */
+      .cal-datecell.cal-today { padding: 4px 8px 0; }
       /* Multi-day bar strip — same 7-col / 3px-gap geometry as the
          day grid below, so a bar spanning grid-column N/M lines up
          exactly with the cells under it. A bar spanning columns also
@@ -4677,6 +4688,7 @@ class KatjaScheduleCard extends HTMLElement {
         border-top-color: rgba(255,255,255,0.72);
         padding-top: 8px; margin-bottom: 8px; }
       .cal-grid.is-zoomed .cal-today-col { box-shadow: inset 0 0 0 4px var(--accent); }
+      .cal-grid.is-zoomed .cal-datecell.cal-today { padding: 6px 10px 0; }
       /* Zoomed Starred flow — fills the panel; bigger chips + type. The
          28px week-number gutter widens to 36px so the larger week
          numbers fit; the dow / week / rules grids must all match. */
