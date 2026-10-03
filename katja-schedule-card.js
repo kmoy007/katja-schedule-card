@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.80.0";
+const CARD_VERSION = "0.81.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -601,21 +601,35 @@ const THEMES = {
 // tests/test_ha_card_person_colors.py fails if the two drift apart.
 const PERSON_COLORS = {
   katja: "#7C3AED", caleb: "#059669", sam: "#2563EB", ken: "#0D9488",
-  kids: "#D97706", family: "#E0561B", shared: "#E0561B",
+  kids: "#D97706", family: "#E0561B",
 };
 const PERSON_COLOR_OTHER = "#64748B";
+// A calendar labelled Shared is the household's own, and reads as Family.
+const CALENDAR_LABEL_PERSON = { shared: "family" };
 
-// The colour for one event. A known person always wins (Ken, 2026-09-29):
-// a `color:` on the calendar in the dashboard YAML used to win over
-// everything, and with the usual single-calendar setup that painted every
-// event one colour, so nobody's colour ever showed. The YAML colour now
-// only colours events with no known person; after that, a calendar
-// labelled with a person's name, then slate grey.
-function personColorFor(who, calColor, calLabel) {
-  const key = String(who || "").toLowerCase().split(",")[0].trim();
-  return PERSON_COLORS[key]
+// The person an event is coloured by ("sam", or "" for nobody). The server
+// decides — renderer.person_key: the first word of `who`, as a whole word,
+// ignoring case — and says so in the event's `Person:` line (integration
+// 0.31.0+) or a feed's `person`. `stamped` is that answer and wins whenever
+// it is there, "" included. Without it (an older integration or server) the
+// same rule runs here; tests/person_key_cases.json pins both.
+function personKeyFor(who, stamped) {
+  if (typeof stamped === "string") return stamped;
+  const first = (String(who || "").toLowerCase().match(/\p{L}+/u) || [""])[0];
+  return Object.keys(PERSON_COLORS).includes(first) ? first : "";
+}
+
+// The colour for one event, from its person key. A known person always
+// wins (Ken, 2026-09-29): a `color:` on the calendar in the dashboard YAML
+// used to win over everything, and with the usual single-calendar setup
+// that painted every event one colour, so nobody's colour ever showed. The
+// YAML colour now only colours events with no known person; after that, a
+// calendar labelled with a person's name, then slate grey.
+function personColorFor(person, calColor, calLabel) {
+  const label = String(calLabel || "").toLowerCase().trim();
+  return PERSON_COLORS[person]
     || calColor
-    || PERSON_COLORS[String(calLabel || "").toLowerCase().trim()]
+    || PERSON_COLORS[CALENDAR_LABEL_PERSON[label] || label]
     || PERSON_COLOR_OTHER;
 }
 
@@ -881,7 +895,7 @@ class KatjaScheduleCard extends HTMLElement {
           const meta = this._parseEventMeta(ev.description || "");
           all.push({
             ...ev,
-            _color: personColorFor(meta.who, cal.color, cal.label),
+            _color: personColorFor(personKeyFor(meta.who, meta.person), cal.color, cal.label),
             _label: meta.who || cal.label || cal.entity.split("_").pop(),
             _status: meta.status || "",
             _eventId: meta.eventid || "",
@@ -996,7 +1010,7 @@ class KatjaScheduleCard extends HTMLElement {
         start: {dateTime: startISO},
         end: {dateTime: ""},
         description: `Where: ${args.where || ""}\nWho: ${args.who || ""}`,
-        _color: personColorFor(args.who),
+        _color: personColorFor(personKeyFor(args.who, p.person)),
         _label: args.who || "",
         _status: "",
         _eventId: "",
@@ -1037,7 +1051,7 @@ class KatjaScheduleCard extends HTMLElement {
       // _to_calendar_event. `dtend` and `starred` were added by the
       // fr-2026-05-19 HA-parity sweep so the card can fan multi-day
       // spans across every covered day and show per-row star state.
-      if (k === "who" || k === "status" || k === "where" || k === "flight"
+      if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid") {
         out[k] = m[2].trim();
@@ -3649,7 +3663,7 @@ class KatjaScheduleCard extends HTMLElement {
       location: ev.where || "",
       description: desc.join("\n"),
       start, end,
-      _color: personColorFor(ev.who),
+      _color: personColorFor(personKeyFor(ev.who, ev.person)),
       _label: ev.who || "",
       _status: ev.status || "",
       _eventId: ev.event_id || "",

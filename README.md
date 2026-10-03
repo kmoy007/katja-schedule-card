@@ -34,7 +34,7 @@ sensors:
 
 Calendar entity names match the family members configured in the integration.
 
-`color` is optional. Events are coloured by their `Who` using the card's built-in person palette (the same colours as the web app); a known person always wins. `color` only colours events from that calendar that have no known person.
+`color` is optional. Events are coloured by person using the card's built-in person palette (the same colours as the web app): the first word of `Who`, so "Sam & Katja" is Sam, as named by the integration's `Person:` line (0.31.0+); a known person always wins. `color` only colours events from that calendar that have no known person.
 
 ### Single-view mode
 
