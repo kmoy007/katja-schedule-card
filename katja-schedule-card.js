@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.81.0";
+const CARD_VERSION = "0.82.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -633,6 +633,18 @@ function personColorFor(person, calColor, calLabel) {
     || PERSON_COLOR_OTHER;
 }
 
+// Every value `view:` accepts. Each one locks the card to that view (no
+// view toggle); anything else gives the full card with the toggle.
+const LOCKED_VIEWS = ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today", "starred", "preview"];
+
+// How long the preview leaves its list where someone scrolled it before a
+// render may scroll it past the ended events again: the 90 s the wall
+// panels wait before going back to their home screen.
+const PREVIEW_HOLD_MS = 90_000;
+
+// The down chevron on the preview's "N more" button.
+const DOWN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>';
+
 const DAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const DAY_SHORT_MON = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -659,17 +671,23 @@ const RELOAD_ICON = '<svg class="reload-ico" viewBox="0 0 24 24" width="15" heig
 class KatjaScheduleCard extends HTMLElement {
   connectedCallback() {
     if (!this._uxTimer) this._uxTimer = setInterval(() => this._uxFlush(), 30_000);
+    // A preview HA moves between views comes back with its list scrolled
+    // to the top: scroll it past the ended events once it is laid out.
+    if (this._lockedView === "preview") requestAnimationFrame(() => this._previewSync());
     // Minute-ticker for the Day View NOW line. HA re-renders the card
     // on every entity state change, but the wall display can go a
     // full minute without one — so the red NOW rule would otherwise
     // stay locked to whatever position it had at the last hass()
     // update. Re-render every minute when the active view is dayview
-    // (or the card is locked to dayview) so the line creeps.
+    // (or the card is locked to dayview) so the line creeps. The
+    // preview too: a row ends, the evening roll-over, midnight. Its
+    // render leaves the list alone while someone is using it.
     if (this._nowTickerId) return;
     this._nowTickerId = setInterval(() => {
       if (this._view === "dayview"
           || this._lockedView === "dayview"
-          || this._lockedView === "dayview-today") {
+          || this._lockedView === "dayview-today"
+          || this._lockedView === "preview") {
         this._render();
       }
     }, 60_000);
@@ -793,18 +811,43 @@ class KatjaScheduleCard extends HTMLElement {
     // it after the user has cycled away (fr-2026-05-21).
     this._defaultTheme = this._theme;
     this._showThemeToggle = !!config.show_theme_toggle;
-    // view config locks the card to a single view: today, tomorrow,
-    // calendar, schedule, overview, dayview, dayview-today, starred.
+    // view config locks the card to a single view (LOCKED_VIEWS).
     // `starred` makes a dedicated long-range Starred card (the view
     // carries its own D/E/A/B/C sub-layout picker) — fr-2026-05-20,
     // the dropdown previously had no Starred lock so Starred was only
     // reachable via the full-card toggle.
+    // `preview` is the compact today list for the small wall panels
+    // (Bathroom / Master Bedroom, 2026-10-02): one line per event, the
+    // list scrolled past what has ended, tomorrow after the evening.
     const locked = (config.view || "").toLowerCase();
-    if (locked && ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today", "starred"].includes(locked)) {
+    if (locked && LOCKED_VIEWS.includes(locked)) {
       this._lockedView = locked;
       this._view = locked === "today" || locked === "tomorrow" ? "schedule" : locked;
     } else {
       this._lockedView = null;
+    }
+    // Preview knobs, read only for the preview (other views ignore them,
+    // as before). A bad value is a config error HA shows on the card,
+    // never a silent fallback to the default.
+    this._previewRows = 6;
+    this._previewRowHeight = 42;
+    this._previewEveningMin = 21 * 60;
+    const isPreview = this._lockedView === "preview";
+    if (isPreview && config.rows != null) {
+      const n = Number(config.rows);
+      if (!Number.isInteger(n) || n < 1) throw new Error("rows must be a whole number of 1 or more.");
+      this._previewRows = n;
+    }
+    if (isPreview && config.row_height != null) {
+      const h = Number(config.row_height);
+      if (!Number.isFinite(h) || h < 24) throw new Error("row_height must be a number of pixels, 24 or more.");
+      this._previewRowHeight = h;
+    }
+    if (isPreview && config.evening_switch != null) {
+      const m = String(config.evening_switch).trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+      // Unquoted, YAML reads 21:00 as the number 1260: say to quote it.
+      if (!m) throw new Error("evening_switch must be a quoted 24-hour time such as '21:00'.");
+      this._previewEveningMin = Number(m[1]) * 60 + Number(m[2]);
     }
     // seam: where adjacent cards abut. Flattens border-radius on those edges
     // and drops the shadow so siblings inside a horizontal-stack /
@@ -829,6 +872,8 @@ class KatjaScheduleCard extends HTMLElement {
 
   getCardSize() {
     const v = this._lockedView;
+    // One unit is 50px: the header, `rows` rows and the "N more" button.
+    if (v === "preview") return Math.ceil((this._previewRows * this._previewRowHeight + 110) / 50);
     if (v === "today" || v === "tomorrow") return 6;
     if (v === "calendar") return 8;
     return 12;
@@ -884,10 +929,15 @@ class KatjaScheduleCard extends HTMLElement {
     const endProbe = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 35);
     const endISO = this._pacificISOAtMidnight(endProbe.getFullYear(), endProbe.getMonth(), endProbe.getDate());
     const all = [];
+    // Calendars that loaded: the API answered and the entity isn't
+    // unavailable (the integration's calendar answers [] before its
+    // first poll succeeds, which must not read as a quiet day).
+    let loaded = 0;
     for (const cal of this._config.calendars) {
       try {
         const events = await this._hass.callApi("GET",
           `calendars/${encodeURIComponent(cal.entity)}?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`);
+        if (this._hass.states?.[cal.entity]?.state !== "unavailable") loaded++;
         for (const ev of events || []) {
           // Integration v0.12+ encodes Who/Status as `Key: value` lines in
           // description. Parse those out so the card can color-by-person and
@@ -931,6 +981,10 @@ class KatjaScheduleCard extends HTMLElement {
         }
       } catch (e) { console.warn(`Failed to fetch from ${cal.entity}:`, e); }
     }
+    // Every calendar failed: the preview says so instead of "Nothing on
+    // the calendar". Some loaded: show what loaded.
+    this._fetchFailed = loaded === 0;
+    this._fetchedOnce = true;
     const seen = new Set(), deduped = [];
     for (const ev of all) {
       const key = `${ev.summary||""}|${ev.start?.dateTime||ev.start?.date||""}`;
@@ -1491,6 +1545,33 @@ class KatjaScheduleCard extends HTMLElement {
       if (opts?.settles) s.pending.delete(opts.settles);
       return;
     }
+  }
+
+  // A tap on a rendered row: open its detail sheet. `idx` indexes
+  // _renderedEvents, which can hold rows that aren't in this._events.
+  _openEventAt(idx) {
+    const ev = (this._renderedEvents || this._events)[idx];
+    if (!ev) return;
+    // Ghost rows for pending `add` proposals don't back any
+    // calendar event — they're a render-time visualization only.
+    // Acting on them happens from the web schedule (Approve/Reject
+    // inline). Skip the detail modal in that case.
+    const isGhost = ev._pendingProposal?.kind === "add" && !ev._eventId;
+    if (isGhost) return;
+    // Continuation copies (fr-2026-05-19 fanout) re-anchor `start`
+    // to the per-day date so _groupByDate files them under the
+    // right bucket. Clicking one should open the canonical start-
+    // day modal — same span info, but the date shown matches what
+    // the user thinks of as the event's start.
+    let target = ev;
+    if (ev._isContinuation && ev._spanStart && ev._eventId) {
+      const startCopy = (this._renderedEvents || []).find(e =>
+        e._eventId === ev._eventId
+        && !e._isContinuation
+        && (e.start?.date || e.start?.dateTime || "").slice(0, 10) === ev._spanStart);
+      if (startCopy) target = startCopy;
+    }
+    this._openDetail(target);
   }
 
   _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
@@ -2266,6 +2347,8 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderDayView(grouped);
     } else if (locked === "dayview-today") {
       body = this._renderDayViewToday(grouped);
+    } else if (locked === "preview") {
+      body = this._renderPreview(grouped);
     } else if (this._view === "overview") {
       body = this._renderOverview(grouped);
     } else if (this._view === "dayview") {
@@ -2370,9 +2453,15 @@ class KatjaScheduleCard extends HTMLElement {
     // current on every keystroke.
     const focusedHm = this.shadowRoot.activeElement?.getAttribute?.("data-hm-field") || "";
     const hmSel = focusedHm ? [this.shadowRoot.activeElement.selectionStart, this.shadowRoot.activeElement.selectionEnd] : null;
+    // The preview carries no chrome at all: its own header line is the
+    // only thing above the rows, so the floating theme / reload buttons
+    // would sit on top of its "+ tomorrow ›".
+    const isPreview = locked === "preview";
+    const pvList = isPreview ? this.shadowRoot.querySelector(".pv-list") : null;
+    const pvPrev = pvList ? { top: pvList.scrollTop, day: pvList.dataset.day } : null;
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
-      <ha-card><div class="card${locked ? " card-locked" : ""}${seamClasses}">
+      <ha-card${isPreview ? ' class="pv-host"' : ""}><div class="card${locked ? " card-locked" : ""}${isPreview ? " card-preview" : ""}${seamClasses}">
         ${showHeader ? `<div class="header${isOverviewHdr ? " header-overview" : ""}">
           ${titleHtml}
           ${showToggle ? `<div class="view-toggle">
@@ -2392,7 +2481,7 @@ class KatjaScheduleCard extends HTMLElement {
             <button class="reload-btn" title="Reload the dashboard">${RELOAD_ICON}</button>
           </div>
         </div>` : ""}
-        ${!showHeader ? `<div class="floating-theme">
+        ${!showHeader && !isPreview ? `<div class="floating-theme">
           ${globalFlaggedBtnHTML}
           ${showThemeBtn ? `<button class="theme-btn" id="theme-cycle">${_esc(THEMES[this._theme].name)}</button>` : ""}
           ${themeResetBtnHTML}
@@ -2468,30 +2557,9 @@ class KatjaScheduleCard extends HTMLElement {
         if (ds) this._toggleDayFlagged(ds);
       });
     });
-    this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () => {
-      const ev = (this._renderedEvents || this._events)[parseInt(el.dataset.eventIdx)];
-      if (!ev) return;
-      // Ghost rows for pending `add` proposals don't back any
-      // calendar event — they're a render-time visualization only.
-      // Acting on them happens from the web schedule (Approve/Reject
-      // inline). Skip the detail modal in that case.
-      const isGhost = ev._pendingProposal?.kind === "add" && !ev._eventId;
-      if (isGhost) return;
-      // Continuation copies (fr-2026-05-19 fanout) re-anchor `start`
-      // to the per-day date so _groupByDate files them under the
-      // right bucket. Clicking one should open the canonical start-
-      // day modal — same span info, but the date shown matches what
-      // the user thinks of as the event's start.
-      let target = ev;
-      if (ev._isContinuation && ev._spanStart && ev._eventId) {
-        const startCopy = (this._renderedEvents || []).find(e =>
-          e._eventId === ev._eventId
-          && !e._isContinuation
-          && (e.start?.date || e.start?.dateTime || "").slice(0, 10) === ev._spanStart);
-        if (startCopy) target = startCopy;
-      }
-      this._openDetail(target);
-    }));
+    this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () =>
+      this._openEventAt(parseInt(el.dataset.eventIdx))));
+    if (isPreview) this._wirePreview(pvPrev);
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._reviewOpen) this._closeReview();
       else if (this._detailEvent) this._closeDetail();
@@ -3162,6 +3230,233 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="dayview-col-grid">${this._renderDayHourAxis(todayDs, grouped[todayDs] || [])}</div>
       </div>
     </div>`;
+  }
+
+  // ---- Preview (view: preview) --------------------------------------
+  // The compact list on the small portrait wall panels (Bathroom and
+  // Master Bedroom, 600 px wide; Ken, 2026-10-02): a one-line header,
+  // all-day events pinned, then one fixed-height line per timed event in
+  // a list that shows `rows` lines and scrolls. Events that have ended
+  // are greyed and scrolled past. After `evening_switch` (Pacific), once
+  // nothing timed is left today, it shows tomorrow instead. A tap runs
+  // the card's `tap_action` (the panels open a popup with the full day).
+
+  /** "YYYY-MM-DD HH:MM" of an ISO instant as a Pacific wall clock reads
+   *  it. Sorts as a string, so it compares with the stamp of now. */
+  _pacificStamp(iso) {
+    const d = new Date(iso);
+    if (!iso || isNaN(d.getTime())) return "";
+    const p = {};
+    for (const x of new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit",
+      day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(d)) p[x.type] = x.value;
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  }
+
+  /** What the preview shows right now: which day, its all-day events,
+   *  its timed events each marked ended or not, and the index of the
+   *  first timed event that hasn't ended (the list is scrolled to it;
+   *  the length of the list when every one has). */
+  _previewModel(grouped) {
+    const now = this._pacificNow();
+    const pad = (n) => String(n).padStart(2, "0");
+    const nowStamp = `${this._fmt(now)} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const build = (ds) => {
+      // Hidden / cancelled rows stay hidden (there is no 🗑 toggle
+      // here), and so do pending `add` proposals: they aren't on the
+      // calendar yet, and a one-line row has no room to say so.
+      const shown = (grouped[ds] || []).filter(ev => !this._isFlagged(ev)
+        && !(ev._pendingProposal?.kind === "add" && !ev._eventId));
+      const timed = shown.filter(ev => ev.start?.dateTime).map(ev => {
+        const end = this._pacificStamp(ev.end?.dateTime || ev.start.dateTime);
+        return { ev, ended: !!end && end <= nowStamp };
+      });
+      const first = timed.findIndex(r => !r.ended);
+      return { ds, allDay: shown.filter(ev => !ev.start?.dateTime), timed,
+               first: first === -1 ? timed.length : first };
+    };
+    const today = build(this._fmt(now));
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    if (nowMin >= this._previewEveningMin && !today.timed.some(r => !r.ended)) {
+      return { mode: "tomorrow", ...build(this._tomorrowStr()) };
+    }
+    return { mode: "today", ...today };
+  }
+
+  /** Which rows are pinned and which scroll, so the card shows `rows`
+   *  rows in all however many all-day events there are (Ken, 2026-10-02).
+   *  Pinned, in order: a warning when the calendar didn't load, then the
+   *  all-day events — at most enough of them to leave the timed list one
+   *  visible row. All-day events past that open the scrolling list, above
+   *  the timed ones, so they are a scroll up rather than gone. `scrollTo`
+   *  is the list row to put on top: the first timed event that hasn't
+   *  ended (the top of the list when there are no timed events). */
+  _previewLayout(m) {
+    const warn = this._fetchFailed ? 1 : 0;
+    const room = Math.max(1, this._previewRows - warn);
+    const A = m.allDay.length, T = m.timed.length;
+    const pinAllDay = T === 0 && A <= room ? A : Math.max(0, Math.min(A, room - 1));
+    const overflow = m.allDay.slice(pinAllDay).map(ev => ({ ev, ended: false }));
+    return {
+      warn: !!warn,
+      pinned: m.allDay.slice(0, pinAllDay),
+      list: overflow.concat(m.timed),
+      visible: Math.max(1, room - pinAllDay),
+      scrollTo: T ? overflow.length + m.first : 0,
+    };
+  }
+
+  /** The tap_action to run, or null when a tap should fall back to the
+   *  card's own behaviour (a row opens its event; the header does
+   *  nothing). `action: none` means a tap does nothing at all. */
+  _previewTapAction() {
+    const ta = this._config.tap_action;
+    return ta && typeof ta === "object" ? ta : null;
+  }
+
+  _previewRow(ev, ended) {
+    const idx = (this._renderedEvents || this._events).indexOf(ev);
+    const summary = ev.summary || "";
+    let cls = "pv-row";
+    if (this._isDrive(summary)) cls += " is-drive";
+    if (ended) cls += " is-past";
+    // Deleted upstream, or a removal waiting in review: struck through,
+    // as on every other view — an unmarked one on the wall is an
+    // invitation to go to something that isn't happening.
+    if ((ev._status || "") === "orphan" || ev._pendingProposal?.kind === "remove") cls += " is-struck";
+    let time = "All day";
+    const s = ev.start?.dateTime ? this._pacificTimeParts(ev.start.dateTime) : null;
+    if (s) time = `${s.h}:${String(s.m).padStart(2, "0")} ${s.ampm}`;
+    return `<button class="${cls}" data-pv-tap data-pv-idx="${idx}">`
+      + `<span class="pv-t">${time}</span>`
+      + `<span class="pv-n"><i style="background:${_esc(ev._color || "#888")}"></i>`
+      + `${ev._isContinuation ? "↳ " : ""}${_esc(summary)}</span></button>`;
+  }
+
+  _renderPreview(grouped) {
+    const m = this._previewModel(grouped);
+    const L = this._previewLayout(m);
+    const tap = this._previewTapAction();
+    // Only something a tap will open is drawn as a button with a "›".
+    const go = !!tap && tap.action !== "none";
+    const d = new Date(m.ds + "T12:00:00");
+    const date = `${d.getDate()} ${MONTH_NAMES[d.getMonth()]}`;
+    const headTag = go ? "button" : "div";
+    const head = m.mode === "tomorrow"
+      ? `<${headTag} class="pv-head pv-tmr" data-pv-tap><span class="pv-day"><b>Tomorrow</b> ${DAY_NAMES[d.getDay()]} ${date}</span>`
+        + `${go ? '<span class="pv-go">Today &amp; tomorrow ›</span>' : ""}</${headTag}>`
+      : `<${headTag} class="pv-head" data-pv-tap><span class="pv-day">Today · ${DAY_NAMES[d.getDay()].slice(0, 3)} ${date}</span>`
+        + `${go ? '<span class="pv-go">+ tomorrow ›</span>' : ""}</${headTag}>`;
+    const rh = this._previewRowHeight;
+    // A row that says something about the calendar rather than an event.
+    const note = (cls, glyph, text) => `<${headTag} class="pv-row ${cls}" data-pv-tap>`
+      + `<span class="pv-t">${glyph}</span><span class="pv-n">${text}</span></${headTag}>`;
+    // A calendar that didn't load must never read as a quiet day.
+    let body = L.warn ? note("pv-warn", "⚠", "Couldn't load the calendar") : "";
+    if (!L.pinned.length && !L.list.length) {
+      if (!L.warn) {
+        body += this._fetchedOnce
+          ? note("pv-empty", "", `Nothing on the calendar ${m.mode}`)
+          : note("pv-empty", "", "Loading the calendar…");
+      }
+    } else {
+      body += L.pinned.map(ev => this._previewRow(ev, false)).join("");
+      if (L.list.length) {
+        body += `<div class="pv-list" data-first="${L.scrollTo}" data-day="${m.mode}|${m.ds}" style="max-height:${L.visible * rh}px">`
+          + L.list.map(r => this._previewRow(r.ev, r.ended)).join("") + `</div>`;
+      }
+      if (L.list.length > L.visible) {
+        body += `<div class="pv-more-slot"><button class="pv-more" hidden aria-label="Show later events">${DOWN_ICON}<span class="pv-more-n"></span></button></div>`;
+      }
+    }
+    return `<div class="pv" style="--pv-row:${rh}px">${head}${body}</div>`;
+  }
+
+  /** How many rows lie below the visible part of the list. */
+  _previewBelow(scrollHeight, clientHeight, scrollTop) {
+    return Math.max(0, Math.round((scrollHeight - clientHeight - scrollTop) / this._previewRowHeight));
+  }
+
+  _previewArrow(list) {
+    const btn = this.shadowRoot.querySelector(".pv-more");
+    if (!btn || !list) return;
+    const below = this._previewBelow(list.scrollHeight, list.clientHeight, list.scrollTop);
+    btn.hidden = below <= 0;
+    if (below > 0) btn.querySelector(".pv-more-n").textContent = `${below} more`;
+  }
+
+  /** Scroll the list so the first event that hasn't ended is the top
+   *  row (the ended ones stay above it, a scroll away), then set the
+   *  "N more" button. */
+  _previewSync() {
+    const list = this.shadowRoot?.querySelector(".pv-list");
+    if (!list) return;
+    list.scrollTop = Number(list.dataset.first || 0) * this._previewRowHeight;
+    this._previewArrow(list);
+  }
+
+  /** True for PREVIEW_HOLD_MS after a touch or a wheel on the preview:
+   *  someone is using the list, so no render may scroll it (Ken,
+   *  2026-10-02 — the same 90 s the panels wait before going home). */
+  _previewHeld() {
+    return !!this._previewTouchedAt && Date.now() - this._previewTouchedAt < PREVIEW_HOLD_MS;
+  }
+
+  _previewTap(el) {
+    const ta = this._previewTapAction();
+    if (ta) {
+      if (ta.action === "none") return;
+      // Home Assistant's standard action event: the dashboard runs the
+      // action (the panels open a browser_mod popup with the full day).
+      this.dispatchEvent(new CustomEvent("hass-action", {
+        bubbles: true, composed: true,
+        detail: { config: { tap_action: ta }, action: "tap" },
+      }));
+      return;
+    }
+    const idx = el.getAttribute("data-pv-idx");
+    if (idx != null) this._openEventAt(parseInt(idx, 10));
+  }
+
+  /** After a render. `prev` is the list as it was before it: while the
+   *  hold lasts the new list keeps that scroll position (same day only),
+   *  otherwise it scrolls past the events that have ended. */
+  _wirePreview(prev) {
+    const root = this.shadowRoot.querySelector(".pv");
+    if (!root) return;
+    const list = root.querySelector(".pv-list");
+    const rh = this._previewRowHeight;
+    if (list && prev && this._previewHeld() && prev.day === list.dataset.day) {
+      list.scrollTop = prev.top;
+      this._previewArrow(list);
+    } else {
+      this._previewSync();
+    }
+    list?.addEventListener("scroll", () => this._previewArrow(list), { passive: true });
+    // Three rows down, landing on a row boundary. The button is outside
+    // every tap target, so a tap on it never opens the popup.
+    root.querySelector(".pv-more")?.addEventListener("click", () =>
+      list.scrollTo({ top: (Math.round(list.scrollTop / rh) + 3) * rh, behavior: "smooth" }));
+    // Someone is using it: a touch (a tap, a drag, the N more button) or
+    // a mouse wheel starts the hold. Scroll events don't, because the
+    // card's own re-scrolls fire them too.
+    root.addEventListener("wheel", () => { this._previewTouchedAt = Date.now(); }, { passive: true });
+    // A tap, not the end of a scroll: a click is ignored when the finger
+    // moved, or the list scrolled, between pointer down and up.
+    let down = null;
+    root.addEventListener("pointerdown", (e) => {
+      this._previewTouchedAt = Date.now();
+      down = { x: e.clientX, y: e.clientY, top: list ? list.scrollTop : 0 };
+    });
+    root.querySelectorAll("[data-pv-tap]").forEach(el => el.addEventListener("click", (e) => {
+      const start = down;
+      down = null;
+      if (start && e.detail > 0 && (Math.abs(e.clientX - start.x) > 10
+          || Math.abs(e.clientY - start.y) > 10
+          || Math.abs((list ? list.scrollTop : 0) - start.top) > 2)) return;
+      this._previewTap(el);
+    }));
   }
 
   // Render a single day's vertical hour-axis grid. Hour labels in the
@@ -5385,6 +5680,64 @@ class KatjaScheduleCard extends HTMLElement {
         .flow-dow span { font-size: 10px; padding: 4px 0 4px 3px; }
       }
 
+      /* Preview (view: preview, 2026-10-02) — the compact today list for
+         the small portrait wall panels. It keeps its own dark palette
+         whatever the theme: it is built to sit on the panels' dark-teal
+         dashboard (theme: none there would otherwise make it the
+         translucent teal of the HA cards around it), and the amber
+         accent is only readable on dark. The font follows the theme. */
+      ha-card.pv-host {
+        --pv-bg: #1d2a2f; --pv-line: rgba(255,255,255,0.08);
+        --pv-text: #f2f6f7; --pv-muted: rgba(242,246,247,0.72);
+        --pv-amber: #ffd38a; --pv-amber-ink: #1b1407;
+        display: block; background: var(--pv-bg); border: none; overflow: hidden;
+        border-radius: var(--ha-card-border-radius, 18px);
+        box-shadow: var(--ha-card-box-shadow, none);
+      }
+      .card.card-preview { background: transparent; border-radius: 0; box-shadow: none; }
+      .pv { padding: 6px 0 8px; color: var(--pv-text); font-family: var(--font); }
+      .pv-head, .pv-row, .pv-more { all: unset; box-sizing: border-box; font-family: var(--font); }
+      button.pv-head, button.pv-row, .pv-more { cursor: pointer; }
+      .pv-head:focus-visible, .pv-row:focus-visible, .pv-more:focus-visible {
+        outline: 2px solid var(--pv-amber); outline-offset: -2px; }
+      .pv-head { display: flex; width: 100%; justify-content: space-between; align-items: baseline; gap: 12px;
+        padding: 6px 16px; font-size: 13px; letter-spacing: 0.07em;
+        text-transform: uppercase; font-weight: 700; color: var(--pv-muted); }
+      .pv-go { color: var(--pv-amber); text-transform: none; letter-spacing: 0;
+        font-size: 15px; font-weight: 600; white-space: nowrap; }
+      /* After the evening switch the card shows tomorrow: an amber bar
+         with a big Tomorrow, so nobody reads it as today. */
+      .pv-head.pv-tmr { margin: -6px 0 4px; padding: 12px 16px; align-items: center;
+        background: rgba(255,211,138,0.16); border-bottom: 1px solid rgba(255,211,138,0.35);
+        text-transform: none; letter-spacing: 0; font-size: 16px; font-weight: 500;
+        color: var(--pv-text); }
+      .pv-head.pv-tmr b { font-size: 24px; font-weight: 700; color: var(--pv-amber);
+        letter-spacing: 0.02em; margin-right: 8px; }
+      .pv-row { display: grid; width: 100%; height: var(--pv-row); grid-template-columns: 80px minmax(0, 1fr);
+        gap: 12px; align-items: center; padding: 0 16px;
+        border-top: 1px solid var(--pv-line); font-size: 17px; color: var(--pv-text); }
+      .pv-row.is-past { opacity: 0.45; }
+      .pv-t { color: var(--pv-muted); font-size: 15px; text-align: right;
+        font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .pv-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pv-n i { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+        margin: 0 8px 2px 0; vertical-align: middle; }
+      .pv-row.is-drive .pv-n { font-style: italic; color: var(--pv-muted); }
+      .pv-row.is-struck .pv-n { text-decoration: line-through; opacity: 0.7; }
+      .pv-row.pv-empty .pv-n, .pv-row.pv-warn .pv-n { font-style: italic; color: var(--pv-muted); }
+      .pv-row.pv-warn .pv-t { color: var(--pv-amber); }
+      .pv-list { overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+      .pv-list::-webkit-scrollbar { display: none; }
+      /* The "N more" button sits under the list, never over a row. Its
+         slot keeps its height when the button hides at the bottom, so
+         the dashboard below doesn't jump while someone scrolls. */
+      .pv-more-slot { display: flex; justify-content: center; padding: 8px 0 2px; }
+      .pv-more { display: flex; align-items: center; gap: 6px; padding: 4px 16px 4px 8px;
+        border-radius: 999px; background: var(--pv-amber); color: var(--pv-amber-ink);
+        font-weight: 700; font-size: 15px; box-shadow: 0 4px 14px rgba(0,0,0,0.55); }
+      .pv-more[hidden] { visibility: hidden; }
+      .pv-more svg { width: 34px; height: 34px; fill: var(--pv-amber-ink); }
+
       /* Per-theme escape hatch — appended last so it overrides any of the above.
          Lives at card scope only; per-panel customCss is not supported. */
       ${t.customCss || ""}
@@ -5526,6 +5879,7 @@ class KatjaScheduleCardEditor extends HTMLElement {
           <option value="calendar" ${c.view === "calendar" ? "selected" : ""}>Calendar grid only</option>
           <option value="schedule" ${c.view === "schedule" ? "selected" : ""}>Schedule (Cards) only</option>
           <option value="starred" ${c.view === "starred" ? "selected" : ""}>Starred only (6-month long-range)</option>
+          <option value="preview" ${c.view === "preview" ? "selected" : ""}>Preview (compact today list for a small panel)</option>
         </select>
       </div>
 

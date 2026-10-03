@@ -57,8 +57,41 @@ view: calendar
 calendars: ...
 ```
 
-Options: `today`, `tomorrow`, `calendar`, `schedule`, `overview` (default: full card with toggle).
+Options: `today`, `tomorrow`, `calendar`, `schedule`, `overview`, `dayview`, `dayview-today`, `starred`, `preview` (default: full card with toggle).
 Locked views hide the header and view toggle for a clean embedded look.
+
+### Preview (a small panel)
+
+`view: preview` is a compact list for a small wall tablet (built for the 600 px portrait Bathroom and Master Bedroom panels):
+
+```yaml
+type: custom:katja-schedule-card
+view: preview
+theme: none
+show_theme_toggle: false
+rows: 6                 # rows the card shows, all-day ones included (default 6)
+row_height: 42          # px per row (default 42, at least 24)
+evening_switch: '21:00' # Pacific; when it may switch to tomorrow (default '21:00'). Quote it: YAML reads 21:00 as a number
+calendars:
+  - entity: calendar.schedule
+tap_action:             # optional; any Home Assistant action
+  action: fire-dom-event
+  browser_mod:
+    service: browser_mod.popup
+    data: {title: Family Schedule, size: fullscreen, content: {...}}
+```
+
+- One small header line, `TODAY · FRI 2 OCT`, with `+ tomorrow ›` on the right when there is a `tap_action`. No title, view toggle, theme toggle, review or sync chips.
+- All-day events are pinned at the top. Below them each timed event is one line: start time, the person's colour dot, the title (drives italic and muted).
+- The card shows `rows` rows in all, the pinned all-day ones included, so its height doesn't change with the number of all-day events. The timed rows fill what's left and scroll by touch (no scrollbar). If there are too many all-day events, the first ones are pinned, leaving the timed list at least one visible row, and the rest are at the top of the scrolling list, a scroll up.
+- Events that have ended are greyed. When the card draws, the list is scrolled so the first event that hasn't ended is at the top; the ended ones are a scroll up.
+- Someone using it isn't interrupted: for 90 s after a touch or a mouse wheel on the card (the same 90 s the panels wait before going back to their home screen), a redraw (the minute tick, the 5-minute refresh) leaves the list where it is. After that, the next redraw scrolls it past the ended events again. When Home Assistant brings the card back after a dashboard view switch, the list is scrolled past the ended events again.
+- When rows are below the visible ones, an amber `⌄ N more` button sits under the list. A tap scrolls three rows down. It counts down as you scroll and hides at the bottom (its space stays, so the dashboard doesn't jump).
+- From `evening_switch` on, once no timed event today is still running, it shows **tomorrow**: an amber bar with a big **Tomorrow** and the date, and tomorrow's events (or "Nothing on the calendar tomorrow"). This is checked every minute.
+- A tap on the header or a row (not on `N more`, and not a scroll) runs `tap_action` through Home Assistant, so the dashboard can open a popup with the full day. With no `tap_action`, a row opens that event's details and the header does nothing; `tap_action: {action: none}` makes every tap do nothing.
+- It has its own dark palette (card `#1d2a2f`, amber `#ffd38a`) whatever the `theme`: it is made to sit on a dark dashboard, and the amber is only readable on dark. The font follows the theme.
+- If no calendar loaded (the calendar API failed, or the entity is unavailable), the first row is a muted "⚠ Couldn't load the calendar" instead of "Nothing on the calendar today", so a broken calendar never looks like a quiet day. Whatever did come back is shown under it. If some calendars loaded, it shows what loaded. Before the first load it says "Loading the calendar…".
+- A bad `rows`, `row_height` or `evening_switch` is shown as a configuration error on the card.
 
 ## Features
 
