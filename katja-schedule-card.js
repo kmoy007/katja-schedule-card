@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.79.1";
+const CARD_VERSION = "0.80.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -902,6 +902,11 @@ class KatjaScheduleCard extends HTMLElement {
             // ones. Absent on an older integration: no highlight, and
             // the question still works.
             _pickup: meta.pickup || "",
+            // "Live: 1" (integration 0.30.0+) — the poller's live-status
+            // copy of a delayed flight, flagged by the server. It is
+            // deleted when the delay clears, so the pickup question is
+            // asked on the flight's own row, never here.
+            _live: meta.live === "1",
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1034,7 +1039,7 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "pickup" || k === "notes" || k === "recurringeventid") {
+          || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid") {
         out[k] = m[2].trim();
       }
     }
@@ -1426,7 +1431,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._uxSheetClose();
     const ctx = this._uxContext(ev);
     const pending = new Set();
-    if (ctx === "flight-arrival" && ev?._eventId) pending.add("pickup.question");
+    // Not on a live-status copy: it shows no question to abandon.
+    if (ctx === "flight-arrival" && ev?._eventId && !ev._live) pending.add("pickup.question");
     this._uxSheet = { ctx, acted: false, pending };
   }
   _uxSheetClose() {
@@ -1747,25 +1753,17 @@ class KatjaScheduleCard extends HTMLElement {
       // waiting for that is exactly the "did my tap do anything?" gap this
       // highlight exists to close.
       if (ev) ev._pickup = outcome === "drive" ? `drive:${driver || ""}` : outcome;
-      if (res && res.pickup) {
-        let text = res.already_planned
-          ? `Already settled: ${res.pickup.time} — ${res.pickup.what}. Nothing new was queued.`
-          : `${res.pickup.time} — ${res.pickup.what}. Curbside is ${res.wait_min} min after landing. It is waiting in Review.`;
-        let bad = false;
-        // A drive built on the flat fallback must not read like a good one.
-        if (res.lookup_ok === false) {
-          bad = true;
-          text += " Warning: the drive time is a flat estimate — the traffic lookup failed. Recheck before leaving.";
-        } else if (res.traffic_basis && res.traffic_basis !== "pessimistic") {
-          bad = true;
-          text += res.traffic_basis === "typical"
-            ? " Warning: typical traffic only, no pessimistic estimate. Allow extra."
-            : " Warning: no traffic data at all behind this drive. Allow extra.";
-        }
-        this._pickupResult = { text, bad };
-      } else {
-        this._pickupResult = { text: "Noted on the arrival. You won't be asked again.", bad: false };
-      }
+      // The sentence is the server's (app._pickup_message), shown as it
+      // comes, including what became of the previous one. Web, card and
+      // phone used to word the same result three ways, and this card
+      // promised never to repeat the question under "Tap to change". A warning
+      // (a drive on the flat fallback, or with no pessimistic traffic
+      // behind it) must not read like a good one. A server older than the
+      // sentence gets a plain "Saved.", not the green of a good result: it
+      // may be hiding a warning this card can no longer word.
+      this._pickupResult = res && res.message
+        ? { text: res.message, bad: !!res.message_warns }
+        : { text: "Saved.", bad: false, plain: true };
     } catch (e) {
       this._pickupResult = { text: "Could not settle the pickup: " + e.message, bad: true };
     }
@@ -2846,8 +2844,15 @@ class KatjaScheduleCard extends HTMLElement {
     // household actually walks past. "inbound" is exactly "the destination
     // is one of the household's airports", which is where a pickup is a
     // drive that starts at this house.
-    const pickupOwns = !!(flightInfo && flightInfo.direction === "inbound"
-                          && ev._eventId);
+    //
+    // Not on the poller's live-status copy of a delayed flight (`_live`,
+    // the server's flag): it is deleted when the delay clears, an answer
+    // on it would go with it, and the server refuses one. The question is
+    // on the flight's own row, and Add drive row still steps aside here,
+    // pointing there (`pickupElsewhere`).
+    const inboundArrival = !!(flightInfo && flightInfo.direction === "inbound");
+    const pickupOwns = !!(inboundArrival && ev._eventId && !ev._live);
+    const pickupElsewhere = inboundArrival && !!ev._live;
     if (pickupOwns) {
       const pr = this._pickupResult;
       // Which chip is already chosen. Four identical buttons told the
@@ -2875,7 +2880,7 @@ class KatjaScheduleCard extends HTMLElement {
             <button ${chipAttrs("no_pickup")} data-outcome="no_pickup" ${this._pickupLoading?"disabled":""}>✕ No pickup needed</button>
           </div>
           ${this._pickupLoading ? '<div class="pickup-result">⏳ Working it out…</div>' : ""}
-          ${pr ? `<div class="pickup-result ${pr.bad ? "bad" : ""}">${_esc(pr.text)}</div>` : ""}
+          ${pr ? `<div class="pickup-result ${pr.bad ? "bad" : pr.plain ? "plain" : ""}">${_esc(pr.text)}</div>` : ""}
         </div>`;
     }
     if (isFlight) {
@@ -2938,11 +2943,14 @@ class KatjaScheduleCard extends HTMLElement {
         if (!this._actionResult) {
           if (isDrive) {
             actions = `<button class="action-btn action-update" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Updating...": `✓ Update to ${_esc(r.duration_text)} (with traffic)`}</button>`;
-          } else if (pickupOwns) {
+          } else if (pickupOwns || pickupElsewhere) {
             // The drive time above is the leg *back* from the airport,
             // worth knowing and not a row. Building the collection is
             // Plan pickup's job — offering both is bug-ios-20260925-132307.
-            actions = `<div class="pickup-instead">That is the drive <em>back</em> from the airport. To plan the collection, use <strong>Who is collecting them?</strong> above — it adds the airport processing time and solves the drive in the right direction.</div>`;
+            const where = pickupOwns
+              ? "use <strong>Who is collecting them?</strong> above"
+              : "open the flight's own row and use <strong>Who is collecting them?</strong>";
+            actions = `<div class="pickup-instead">That is the drive <em>back</em> from the airport. To plan the collection, ${where} — it adds the airport processing time and solves the drive in the right direction.</div>`;
           } else {
             actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${_esc(r.duration_text)} drive row before this event (with traffic)`}</button>`;
           }
@@ -4981,6 +4989,7 @@ class KatjaScheduleCard extends HTMLElement {
       .pickup-btn.chosen:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
       .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
       .pickup-result.bad { background: rgba(178,63,43,0.15); }
+      .pickup-result.plain { background: transparent; border: 1px solid rgba(127,127,127,0.3); }
       .pickup-instead { padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px; line-height: 1.45; color: var(--muted); }
       .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
       .origin-btn:hover { border-color: var(--accent); background: var(--accent-bg); }
