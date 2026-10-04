@@ -101,6 +101,7 @@ tap_action:             # optional; any Home Assistant action
 - Drive rows styled italic/muted
 - Flight events get a teal badge with flight number
 - Pending review count badge in header
+- An assistant's change waiting for review says where it came from, beside its Apply and in the review list: who forwarded the email, the flight, or a warning for mail a stranger sent to the inbox. The words are the app's own (the web review page's); a server too old to send them leaves the line out. A stranger's mail is applied one at a time, never by an Apply all
 - Last sync time in header
 - Weekend day headers tinted warm
 - Sticky day headers while scrolling

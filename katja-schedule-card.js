@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.82.2";
+const CARD_VERSION = "0.83.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1035,12 +1035,23 @@ class KatjaScheduleCard extends HTMLElement {
     for (const p of proposals) {
       const k = p.kind, args = p.args || {};
       if (k === "update" || k === "hide" || k === "accept" || k === "merge") {
-        if ((args.event_id || "") === evId) return {kind: k, id: p.id};
+        if ((args.event_id || "") === evId) return this._pendingMarker(p);
       } else if (k === "remove") {
-        if ((p.target_event_ids || []).includes(evId)) return {kind: "remove", id: p.id};
+        if ((p.target_event_ids || []).includes(evId)) return this._pendingMarker(p);
       }
     }
     return null;
+  }
+
+  /** The `_pendingProposal` an event carries: the proposal's kind and id,
+   *  and where it came from as the server words it — `source`,
+   *  `unverified` and `reason`, from renderer.proposal_source (the web
+   *  /review page's words). The sheet prints them beside Apply and never
+   *  words the proposal's email or flight itself; an older server sends
+   *  none, and the sheet then says nothing (2026-10-04). */
+  _pendingMarker(p) {
+    return {kind: p.kind, id: p.id, source: p.source || "",
+            unverified: p.unverified === true, reason: p.reason || ""};
   }
 
   /** Synthesize ghost calendar events for pending `add` proposals so
@@ -1077,7 +1088,7 @@ class KatjaScheduleCard extends HTMLElement {
         // without it a Sun→Mon booking only showed on check-in day
         // (bug-ios-20260724-194913).
         _dtEnd: args.dt_end || "",
-        _pendingProposal: {kind: "add", id: p.id},
+        _pendingProposal: this._pendingMarker(p),
       });
     }
     return out;
@@ -2699,14 +2710,20 @@ class KatjaScheduleCard extends HTMLElement {
       const batches = inbox.recurring_batches || [];
       const groups = inbox.groups || [];
       // Aggregate counts so the bulk-action buttons have honest labels.
-      const newIds = [], changedIds = [], proposalIds = [];
+      const newIds = [], changedIds = [], proposalIds = [], applyIds = [];
       for (const g of groups) {
         const ci = g.calendar_item || null;
         if (ci) {
           if (ci.status === "new") newIds.push(ci.event_id || "");
           else if (ci.status === "changed") changedIds.push(ci.event_id || "");
         }
-        for (const p of (g.proposals || [])) proposalIds.push(p.id);
+        for (const p of (g.proposals || [])) {
+          proposalIds.push(p.id);
+          // Mail a stranger sent to the inbox is applied on its own row,
+          // beside its warning, never by Apply all (2026-10-04; the server
+          // refuses it in a batch too). Reject all may still take it.
+          if (p.unverified !== true) applyIds.push(p.id);
+        }
       }
       const allDisabled = pending.size > 0;
       const dis = allDisabled ? " disabled" : "";
@@ -2727,6 +2744,9 @@ class KatjaScheduleCard extends HTMLElement {
           ${batches.map(b => {
             const isAgentAdd = b.kind === "agent-add";
             const ids = isAgentAdd ? (b.proposal_ids || []) : (b.event_ids || []);
+            // The server calls it `size`; reading `count` printed "Apply all
+            // undefined" (found 2026-10-04).
+            const n = b.size ?? ids.length;
             const acceptingNow = ids.length > 0 && ids.every(i => pending.has(i));
             const aDis = (allDisabled || acceptingNow || ids.length === 0) ? " disabled" : "";
             const kindLabel = isAgentAdd ? "Agent-proposed" : "Calendar";
@@ -2739,12 +2759,12 @@ class KatjaScheduleCard extends HTMLElement {
               <div class="review-batch-summary">
                 <span class="review-batch-kind">${_esc(kindLabel)}</span>
                 <strong>${_esc(b.what || "")}</strong>${b.who ? " · " + _esc(b.who) : ""} ·
-                ${b.count} occurrences
+                ${n} occurrences
                 <span class="review-batch-dates">${_esc((b.dates || []).slice(0,3).join(", "))}${(b.dates||[]).length>3?"…":""}</span>
               </div>
               <div class="review-actions">
-                <button class="review-btn accept" data-review-action="${acceptAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${acceptLabel} all ${b.count}</button>
-                <button class="review-btn hide" data-review-action="${declineAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${declineLabel} all ${b.count}</button>
+                <button class="review-btn accept" data-review-action="${acceptAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${acceptLabel} all ${n}</button>
+                <button class="review-btn hide" data-review-action="${declineAction}" ${idsAttr}="${_esc(ids.join(","))}"${aDis}>${declineLabel} all ${n}</button>
               </div>
             </div>`;
           }).join("")}
@@ -2767,7 +2787,7 @@ class KatjaScheduleCard extends HTMLElement {
         ${newIds.length ? `<button class="review-btn-bulk accept" data-review-action="acceptAllNew"${dis}>Accept all ${newIds.length} new</button>` : ""}
         ${newIds.length ? `<button class="review-btn-bulk hide" data-review-action="hideAllNew"${dis}>Hide all ${newIds.length} new</button>` : ""}
         ${changedIds.length ? `<button class="review-btn-bulk accept" data-review-action="acceptAllChanged"${dis}>Accept all ${changedIds.length} changed</button>` : ""}
-        ${proposalIds.length ? `<button class="review-btn-bulk accept" data-review-action="applyProposalsBatch" data-proposal-ids="${_esc(proposalIds.join(","))}"${dis}>Apply all ${proposalIds.length} proposals</button>` : ""}
+        ${applyIds.length ? `<button class="review-btn-bulk accept" data-review-action="applyProposalsBatch" data-proposal-ids="${_esc(applyIds.join(","))}"${dis}>Apply all ${applyIds.length} proposals</button>` : ""}
         ${proposalIds.length ? `<button class="review-btn-bulk reject" data-review-action="rejectProposalsBatch" data-proposal-ids="${_esc(proposalIds.join(","))}"${dis}>Reject all ${proposalIds.length} proposals</button>` : ""}
       </div>` : "";
 
@@ -2837,6 +2857,8 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="review-item-tag review-tag-agent">AGENT</div>
         <div class="review-item-main">
           <div class="review-item-line">${_esc(summary)}</div>
+          ${p.source ? `<div class="review-item-meta review-item-source${p.unverified === true ? " unverified" : ""}">${_esc(p.source)}</div>` : ""}
+          ${p.reason ? `<div class="review-item-meta">— ${_esc(p.reason)}</div>` : ""}
           ${p.added_at ? `<div class="review-item-meta">queued ${_esc(p.added_at.slice(0,16).replace("T", " "))}</div>` : ""}
         </div>
         <div class="review-actions">
@@ -2904,6 +2926,15 @@ class KatjaScheduleCard extends HTMLElement {
     const inFlight = (this._reviewActionPending?.has(peId)
                        || (evId && this._reviewActionPending?.has(evId)));
     const idis = inFlight ? " disabled" : "";
+    // Where an assistant's change came from, just above its Apply: the
+    // server's words (`_pendingMarker`), never worded here. Mail a stranger
+    // sent to the inbox is the warning, as on the web /review page; until
+    // 2026-10-04 this sheet offered Apply on that change with no word on it.
+    const proposalSource = (pp && (pp.source || pp.reason))
+      ? `<div class="modal-proposal-source${pp.unverified ? " unverified" : ""}">${
+          pp.source ? `<div>${_esc(pp.source)}</div>` : ""}${
+          pp.reason ? `<div class="modal-proposal-reason">— ${_esc(pp.reason)}</div>` : ""}</div>`
+      : "";
     if (pp && pp.kind && pp.kind !== "add" && peId) {
       // Standalone agent proposal attached to an existing event (update,
       // hide, accept, merge). Apply / Reject route to the agent helper.
@@ -3159,6 +3190,7 @@ class KatjaScheduleCard extends HTMLElement {
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
             ${notes ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(notes)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
+            ${proposalSource}
             ${inlineReviewSection}
             ${recheckSection}
             ${resultSection}
@@ -5263,6 +5295,21 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-pending-banner.pending-remove { background: #8B2E2E; border-bottom-color: #6B1F1F; }
       .modal-pending-banner.pending-add { background: #946B1F; }
       .modal.is-pending { box-shadow: var(--modal-shadow), 0 0 0 2px #946B1F; }
+      /* Where an assistant's change came from, in the server's words
+         (2026-10-04). Mail nobody forwarded is the warning, in the
+         banner's amber, which reads on every theme. An address is one
+         long word, so it may break anywhere. */
+      .modal-proposal-source { margin: 10px 0 0; padding: 8px 10px;
+        border-radius: var(--radius-sm); border: 1px solid var(--border);
+        font-size: 13px; line-height: 1.45; color: var(--text-soft);
+        overflow-wrap: anywhere; }
+      .modal-proposal-source.unverified { background: #946B1F;
+        border-color: #7A571A; color: #fff; font-weight: 700; }
+      .modal-proposal-reason { margin-top: 4px; font-weight: 400; }
+      .review-item-source { overflow-wrap: anywhere; }
+      .review-item-source.unverified { display: inline-block; padding: 2px 6px;
+        border-radius: var(--radius-xs); background: #946B1F; color: #fff;
+        font-weight: 700; }
 
       /* Recheck */
       .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
