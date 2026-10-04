@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.82.1";
+const CARD_VERSION = "0.82.2";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -759,6 +759,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._reviewLoading = false;
     this._reviewActionPending = new Set();
     this._reviewActionError = null;
+    // Event ids whose hide hasn't answered yet (see _keepHidesOff).
+    this._hidesInFlight = new Set();
     // Starred view (6-month long-range, household-starred only). Data
     // comes from the katja_schedule/list_starred_events WS command on
     // first switch; refreshed on every _fetchEvents tick so star
@@ -990,6 +992,7 @@ class KatjaScheduleCard extends HTMLElement {
       const key = `${ev.summary||""}|${ev.start?.dateTime||ev.start?.date||""}`;
       if (!seen.has(key)) { seen.add(key); deduped.push(ev); }
     }
+    this._keepHidesOff(deduped);
     this._events = deduped;
     // Pull pending proposals in parallel so the schedule + REVIEW
     // badges land in the same render pass. Best-effort: a failure
@@ -1674,7 +1677,10 @@ class KatjaScheduleCard extends HTMLElement {
         ? `${wsType.replace("katja_schedule/", "")}: ${e.message}`
         : `${wsType} failed`;
     }
-    for (const id of ids) this._reviewActionPending.delete(id);
+    for (const id of ids) {
+      this._reviewActionPending.delete(id);
+      this._hidesInFlight.delete(id);
+    }
     // The board as well as the queue: without this a hide stayed on the
     // wall until the card's own five-minute fetch. The integration
     // (0.31.1+) re-reads the server before it answers, so this read sees
@@ -1718,9 +1724,20 @@ class KatjaScheduleCard extends HTMLElement {
   _hideCalendarEvent(event_id) {
     // Off the board now, not when the answer comes back a second or two
     // later; the re-read after it puts the row back if the hide failed.
-    for (const e of this._events) if (e._eventId === event_id) e._status = "hidden_oneoff";
+    this._hidesInFlight.add(event_id);
+    this._keepHidesOff(this._events);
     return this._doReviewAction("katja_schedule/hide_event",
                                   {event_id}, [event_id]);
+  }
+  /** A hide still on its way stays off the board until its own answer,
+   *  through any re-read that lands first: a second quick hide's, whose
+   *  answer comes first, or the five-minute fetch. Without this the
+   *  second row came back for a second or two. Cleared when its own
+   *  answer arrives (_doReviewAction), before the re-read that settles it. */
+  _keepHidesOff(events) {
+    for (const e of events) {
+      if (e._eventId && this._hidesInFlight.has(e._eventId)) e._status = "hidden_oneoff";
+    }
   }
   _unhideCalendarEvent(event_id) {
     return this._doReviewAction("katja_schedule/unhide_event",
