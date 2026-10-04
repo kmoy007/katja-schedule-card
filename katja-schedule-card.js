@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.82.0";
+const CARD_VERSION = "0.82.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1661,7 +1661,9 @@ class KatjaScheduleCard extends HTMLElement {
     this._render();
     let ok = false;
     try {
-      await this._hass.callWS({type: wsType, ...(msgExtra || {})});
+      const r = await this._hass.callWS({type: wsType, ...(msgExtra || {})});
+      // The integration passes the server's answer through, refusals too.
+      if (r && r.ok === false) throw new Error(r.error || "refused");
       ok = true;
     } catch (e) {
       console.warn("KATJA review action failed:", wsType, e);
@@ -1673,8 +1675,12 @@ class KatjaScheduleCard extends HTMLElement {
         : `${wsType} failed`;
     }
     for (const id of ids) this._reviewActionPending.delete(id);
-    await this._refreshReview();
-    if (ok) this._flashToast("Schedule updated");
+    // The board as well as the queue: without this a hide stayed on the
+    // wall until the card's own five-minute fetch. The integration
+    // (0.31.1+) re-reads the server before it answers, so this read sees
+    // the change, and puts back anything shown early that didn't happen.
+    await Promise.all([this._refreshReview(), this._fetchEvents()]);
+    this._flashToast(ok ? "Schedule updated" : "Couldn't update the schedule");
   }
 
   // fr-2026-05-19 HA-parity: transient toast pill after any
@@ -1710,6 +1716,9 @@ class KatjaScheduleCard extends HTMLElement {
                                   {event_id}, [event_id]);
   }
   _hideCalendarEvent(event_id) {
+    // Off the board now, not when the answer comes back a second or two
+    // later; the re-read after it puts the row back if the hide failed.
+    for (const e of this._events) if (e._eventId === event_id) e._status = "hidden_oneoff";
     return this._doReviewAction("katja_schedule/hide_event",
                                   {event_id}, [event_id]);
   }
@@ -1844,9 +1853,9 @@ class KatjaScheduleCard extends HTMLElement {
       });
       if (res && res.ok === false) throw new Error(res.error || "unknown");
       // Move the highlight now. The card reads the answer back off the
-      // calendar entity, which only refreshes on the next 5-minute poll —
-      // waiting for that is exactly the "did my tap do anything?" gap this
-      // highlight exists to close.
+      // calendar entity on its own five-minute fetch — waiting for that is
+      // exactly the "did my tap do anything?" gap this highlight exists to
+      // close.
       if (ev) ev._pickup = outcome === "drive" ? `drive:${driver || ""}` : outcome;
       // The sentence is the server's (app._pickup_message), shown as it
       // comes, including what became of the previous one. Web, card and
@@ -2037,8 +2046,8 @@ class KatjaScheduleCard extends HTMLElement {
     const ev = this._detailEvent;
     if (!this._hass || !ev?._eventId) return;
     this._dropHideMenu();
-    await this._hideCalendarEvent(ev._eventId);
     this._closeDetail();
+    await this._hideCalendarEvent(ev._eventId);
   }
 
   /** Resolved `until` for the current menu state ("" = forever). */
