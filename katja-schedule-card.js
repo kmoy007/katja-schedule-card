@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.83.0";
+const CARD_VERSION = "0.83.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1045,10 +1045,10 @@ class KatjaScheduleCard extends HTMLElement {
 
   /** The `_pendingProposal` an event carries: the proposal's kind and id,
    *  and where it came from as the server words it — `source`,
-   *  `unverified` and `reason`, from renderer.proposal_source (the web
-   *  /review page's words). The sheet prints them beside Apply and never
-   *  words the proposal's email or flight itself; an older server sends
-   *  none, and the sheet then says nothing (2026-10-04). */
+   *  `unverified` and `reason`, from mobile_bootstrap.proposal_provenance.
+   *  The sheet prints them beside Apply and never words the proposal's
+   *  email, flight or origin itself; an older server sends none, and the
+   *  sheet then says nothing. */
   _pendingMarker(p) {
     return {kind: p.kind, id: p.id, source: p.source || "",
             unverified: p.unverified === true, reason: p.reason || ""};
