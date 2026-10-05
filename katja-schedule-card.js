@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.85.1";
+const CARD_VERSION = "0.85.2";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1208,7 +1208,7 @@ class KatjaScheduleCard extends HTMLElement {
   _tomorrowStr() { const t = this._pacificNow(); t.setDate(t.getDate()+1); return this._fmt(t); }
   _isToday(ds) { return ds === this._todayStr(); }
   _isTomorrow(ds) { return ds === this._tomorrowStr(); }
-  _fmtTs(iso) { try { return new Date(iso).toLocaleString("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); } catch(_) { return iso; } }
+  _fmtTs(iso) { try { return new Date(iso).toLocaleString("en-US",{timeZone:"America/Los_Angeles",weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); } catch(_) { return iso; } }
 
   _formatDateHeader(ds) {
     const d = new Date(ds+"T12:00:00"), day = DAY_NAMES[d.getDay()], month = MONTH_NAMES[d.getMonth()];
@@ -1235,6 +1235,25 @@ class KatjaScheduleCard extends HTMLElement {
       m: parseInt(get("minute"), 10),
       ampm: get("dayPeriod"),
     };
+  }
+
+  /** A stored stamp as the web's `pacific_time` filter prints it
+   *  (stamps.py): "2026-10-02 7:30 PM", its Pacific day and clock. Most
+   *  stamps are written in UTC, so cutting one said tomorrow after 5 PM
+   *  and a clock seven or eight hours ahead. A stamp with an offset is
+   *  that moment (`_pacificStamp`, given it without the fraction: Safari
+   *  and Chrome agree only on the standard shape); one with no offset is
+   *  Pacific wall time, as written, which `new Date()` would read in the
+   *  viewer's zone. A bare date, or anything else, comes back as it is.
+   *  tests/pacific_stamp_cases.json holds it to the web and the phone. */
+  _pacificTime(stamp) {
+    const raw = String(stamp ?? "");
+    const m = raw.match(/^(\d{4}-\d\d-\d\d)T(\d\d:\d\d)(?::\d\d(?:\.\d+)?)?(Z|[+-]\d\d:\d\d)?$/);
+    if (!m) return raw;
+    const [day, clock] = m[3] ? this._pacificStamp(raw.replace(/\.\d+/, "")).split(" ") : [m[1], m[2]];
+    if (!clock) return raw;                 // a date no calendar has
+    const [h, min] = clock.split(":").map(Number);
+    return `${day} ${h % 12 || 12}:${String(min).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
   }
 
   _formatTime(ev) {
@@ -1424,7 +1443,7 @@ class KatjaScheduleCard extends HTMLElement {
         if (sha) {
           buildInfo = sha;
           if (bt) {
-            try { buildInfo += ` · ${new Date(bt).toLocaleDateString("en-US", {month:"short", day:"numeric"})}`; } catch(_) {}
+            try { buildInfo += ` · ${new Date(bt).toLocaleDateString("en-US", {timeZone:"America/Los_Angeles", month:"short", day:"numeric"})}`; } catch(_) {}
           }
         }
       }
@@ -2899,7 +2918,7 @@ class KatjaScheduleCard extends HTMLElement {
           <div class="review-item-line">${_esc(summary)}</div>
           ${p.source ? `<div class="review-item-meta review-item-source${p.unverified === true ? " unverified" : ""}">${_esc(p.source)}</div>` : ""}
           ${p.reason ? `<div class="review-item-meta">— ${_esc(p.reason)}</div>` : ""}
-          ${p.added_at ? `<div class="review-item-meta">queued ${_esc(p.added_at.slice(0,16).replace("T", " "))}</div>` : ""}
+          ${p.added_at ? `<div class="review-item-meta">queued ${_esc(this._pacificTime(p.added_at))}</div>` : ""}
         </div>
         <div class="review-actions">
           <button class="review-btn accept" data-review-action="applyProposal" data-pe-id="${_esc(p.id)}"${pDis}>Apply</button>
