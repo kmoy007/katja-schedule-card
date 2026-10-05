@@ -107,6 +107,6 @@ tap_action:             # optional; any Home Assistant action
 - Sticky day headers while scrolling
 - Mon–Sun week grid in calendar view; tap a day for that day's full view, tap an event there for its details
 - Auto-refreshes every 5 minutes
-- A hide, accept, star or rule made on the card shows straight away. Update the integration to 0.31.1 or later with the card: an older integration answers before it has re-read the schedule, so the row comes back until its next poll
+- A hide, accept, star, rule, pickup answer or chat message made on the card shows straight away. Update the integration to 0.31.1 or later with the card: an older integration answers before it has re-read the schedule, so the row comes back until its next poll
 
 # sync test

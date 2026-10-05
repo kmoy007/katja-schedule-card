@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.85.0";
+const CARD_VERSION = "0.85.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1623,6 +1623,9 @@ class KatjaScheduleCard extends HTMLElement {
   // both surfaces stay aligned as new routes ship.
 
   async _openReview() {
+    // A failure from before the queue was opened (a hide from an event's
+    // sheet) is not this queue's news: it was said in its toast then.
+    this._reviewActionError = null;
     this._reviewOpen = true;
     this._reviewLoading = true;
     this._render();
@@ -1693,17 +1696,26 @@ class KatjaScheduleCard extends HTMLElement {
     for (const id of ids) this._reviewActionPending.add(id);
     this._reviewActionError = null;
     this._render();
-    let ok = false;
+    let toast = "Schedule updated";
     try {
       const r = await this._hass.callWS({type: wsType, ...(msgExtra || {})});
       // The integration passes the server's answer through, refusals too.
       if (r && r.ok === false) throw new Error(r.error || "refused");
-      ok = true;
+      // A proposal batch answers ok and lists the items it couldn't do.
+      const failed = Array.isArray(r?.failed) ? r.failed : [];
+      if (failed.length) {
+        const n = failed.length === 1 ? "1 item" : `${failed.length} items`;
+        this._reviewActionError = `${wsType.replace("katja_schedule/", "")}: `
+          + `${n} not done (${failed[0].error || "refused"})`;
+        toast = `Couldn't update ${n}`;
+      }
     } catch (e) {
+      toast = "Couldn't update the schedule";
       console.warn("KATJA review action failed:", wsType, e);
       // Surface the failure so the user knows the action didn't run
       // (most common cause: integration < v0.18.0 so the WS command
-      // isn't registered yet). Banner stays until the next refresh.
+      // isn't registered yet). The queue's banner shows it until the next
+      // action, or until the queue is opened again (_openReview).
       this._reviewActionError = (e && e.message)
         ? `${wsType.replace("katja_schedule/", "")}: ${e.message}`
         : `${wsType} failed`;
@@ -1717,7 +1729,7 @@ class KatjaScheduleCard extends HTMLElement {
     // (0.31.1+) re-reads the server before it answers, so this read sees
     // the change, and puts back anything shown early that didn't happen.
     await Promise.all([this._refreshReview(), this._fetchEvents()]);
-    this._flashToast(ok ? "Schedule updated" : "Couldn't update the schedule");
+    this._flashToast(toast);
   }
 
   // fr-2026-05-19 HA-parity: transient toast pill after any
@@ -1900,10 +1912,10 @@ class KatjaScheduleCard extends HTMLElement {
         event_id: ev._eventId, outcome, driver: driver || "",
       });
       if (res && res.ok === false) throw new Error(res.error || "unknown");
-      // Move the highlight now. The card reads the answer back off the
-      // calendar entity on its own five-minute fetch — waiting for that is
-      // exactly the "did my tap do anything?" gap this highlight exists to
-      // close.
+      // Move the highlight now. The re-read below confirms it from the
+      // calendar entity, which integration 0.31.1+ has already brought up
+      // to date; an older one catches up only at its next poll, and this
+      // highlight is then the only sign the tap did anything.
       if (ev) ev._pickup = outcome === "drive" ? `drive:${driver || ""}` : outcome;
       // The sentence is the server's (app._pickup_message), shown as it
       // comes, including what became of the previous one. Web, card and
@@ -1920,6 +1932,10 @@ class KatjaScheduleCard extends HTMLElement {
       this._pickupResult = { text: "Could not settle the pickup: " + e.message, bad: true };
     }
     this._pickupLoading = false; this._render();
+    // The board too: a driver's answer adds a 🚗 row, and the integration
+    // re-read the server before it answered. Without this the row waited
+    // for the card's own five-minute fetch.
+    this._fetchEvents();
   }
 
   async _sendAgentAction(message) {
@@ -1931,6 +1947,9 @@ class KatjaScheduleCard extends HTMLElement {
       });
     } catch (e) { this._actionResult = { ok: false, error: e.message }; }
     this._actionLoading = false; this._render();
+    // A chat turn can change the board (a note, a change it queued for
+    // review), and the integration re-read the server before it answered.
+    this._fetchEvents();
   }
 
   async _toggleStar(ev) {
