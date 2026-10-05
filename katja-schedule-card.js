@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.84.0";
+const CARD_VERSION = "0.85.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -973,6 +973,13 @@ class KatjaScheduleCard extends HTMLElement {
             // deleted when the delay clears, so the pickup question is
             // asked on the flight's own row, never here.
             _live: meta.live === "1",
+            // "Flight: BA279 LAX→LHR": the row carries a flight tag
+            // (_hideRuleEligible).
+            _flight: meta.flight || "",
+            // "Title: Uber to airport" (integration 0.33.1+): the row's own
+            // title, sent when the summary shows it with a 🚗 it doesn't
+            // carry. A hide rule is made from it (_ruleTitle).
+            _title: meta.title || "",
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1121,7 +1128,8 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid") {
+          || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid"
+          || k === "title") {
         out[k] = m[2].trim();
       }
     }
@@ -2016,13 +2024,28 @@ class KatjaScheduleCard extends HTMLElement {
     this._render();
   }
 
-  /** Whether a standing rule makes sense for this row: flights, drive
-   *  rows, manual rows and rows without an overlay id only get "Hide
-   *  this one". Mirrors the web sheet's gating. */
+  /** Whether the menu offers its two rule options: the server's rule,
+   *  `renderer.row_can_hide_by_rule`, which the web row and the phone read
+   *  — a calendar row with an id and a title, never a hand-made row
+   *  (Status: manual) or a tagged flight (a Flight: line). A drive row
+   *  from a calendar gets them like any other (Ken, 2026-10-04: "Offer the
+   *  rules, like web"; the card withheld them from every drive row). The
+   *  card reads the integration's lines, so it keeps this copy, held to
+   *  the server's over tests/hide_rule_cases.json
+   *  (tests/test_hide_rule_options.py). A Starred event carries the
+   *  feed's own answer. */
   _hideRuleEligible(ev) {
-    const s = (ev?.summary || "").trim();
-    return !!ev?._eventId && !this._isFlight(s) && !this._isDrive(s)
-      && ev._status !== "manual";
+    if (!ev?._eventId) return false;
+    if (typeof ev._canHideByRule === "boolean") return ev._canHideByRule;
+    return !!this._ruleTitle(ev) && ev._status !== "manual" && !ev._flight;
+  }
+
+  /** The row's own title, which a rule is made from and the server
+   *  matches against: never the summary's 🚗 the integration (or
+   *  _driveLabel) put in front of a drive row's title, or "hide every
+   *  🚗 Uber to airport" would never match "Uber to airport" again. */
+  _ruleTitle(ev) {
+    return (ev?._title || ev?.summary || "").trim();
   }
 
   /** Same heuristic as templates/schedule.html suggestPattern: drop a
@@ -2051,7 +2074,7 @@ class KatjaScheduleCard extends HTMLElement {
   _openHideRuleStep(mode) {
     const ev = this._detailEvent;
     if (!ev || !this._hideRuleEligible(ev)) return;
-    const what = (ev.summary || "").trim();
+    const what = this._ruleTitle(ev);
     this._dropHideMenu();
     this._hideMenu = {
       step: "rule",
@@ -2270,7 +2293,7 @@ class KatjaScheduleCard extends HTMLElement {
 
   _renderHideMenu(ev) {
     const m = this._hideMenu;
-    const what = (ev.summary || "").trim();
+    const what = this._ruleTitle(ev);
     const dis = m.loading ? " disabled" : "";
     if (m.step === "choose") {
       const ruleOk = this._hideRuleEligible(ev);
@@ -2545,24 +2568,10 @@ class KatjaScheduleCard extends HTMLElement {
       e.stopPropagation();
       this._switchStarredSubLayout(btn.getAttribute("data-starred-sub") || "a");
     }));
-    // D Flow / E M3 chip taps open the detail modal. Starred events
-    // are fetched separately (list_starred_events) and aren't in
-    // _renderedEvents, so synthesize the detail shape directly from
-    // the chip's data-flow-* attrs.
+    // D Flow / E M3 chip taps open the detail modal (_starredChipDetail).
     this.shadowRoot.querySelectorAll(".flow-event").forEach(btn => btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const detail = this._starredEventToDetailShape({
-        event_id: btn.dataset.flowEventId || "",
-        date: btn.dataset.flowDate || "",
-        time: btn.dataset.flowTime || "",
-        what: btn.dataset.flowWhat || "",
-        who: btn.dataset.flowWho || "",
-        where: btn.dataset.flowWhere || "",
-        notes: btn.dataset.flowNotes || "",
-        dt_end: btn.dataset.flowDtEnd || "",
-        recurring_event_id: btn.dataset.flowRecurringId || "",
-      });
-      this._openDetail(detail);
+      this._openDetail(this._starredChipDetail(btn.dataset));
     }));
     this.shadowRoot.querySelectorAll(".flow-jump-today").forEach(btn => btn.addEventListener("click", () => {
       // Scope the scroll to this button's own grid — with the zoom
@@ -3990,7 +3999,11 @@ class KatjaScheduleCard extends HTMLElement {
                   data-flow-where="${_esc(it.ev.where || "")}"
                   data-flow-notes="${_esc(it.ev.notes || "")}"
                   data-flow-dt-end="${_esc(it.ev.dt_end || "")}"
-                  data-flow-recurring-id="${_esc(it.ev.recurring_event_id || "")}">
+                  data-flow-recurring-id="${_esc(it.ev.recurring_event_id || "")}"
+                  data-flow-calendar-label="${_esc(it.ev.calendar_label || "")}"
+                  data-flow-calendar-kind="${_esc(it.ev.calendar_kind || "")}"${
+                    typeof it.ev.can_hide_by_rule === "boolean"
+                      ? ` data-flow-can-hide-by-rule="${it.ev.can_hide_by_rule ? 1 : 0}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -4007,6 +4020,30 @@ class KatjaScheduleCard extends HTMLElement {
   // entries). Used by the D Flow / E M3 chip click handler since
   // starred events come from a separate WS feed and aren't in
   // this._renderedEvents.
+  /** The detail a Starred chip opens, from its data-flow-* attributes (a
+   *  `dataset`). Starred events are fetched separately
+   *  (list_starred_events) and aren't in _renderedEvents, so the chip
+   *  carries what the sheet needs. */
+  _starredChipDetail(d) {
+    return this._starredEventToDetailShape({
+      event_id: d.flowEventId || "",
+      date: d.flowDate || "",
+      time: d.flowTime || "",
+      what: d.flowWhat || "",
+      who: d.flowWho || "",
+      where: d.flowWhere || "",
+      notes: d.flowNotes || "",
+      dt_end: d.flowDtEnd || "",
+      recurring_event_id: d.flowRecurringId || "",
+      // Its calendar: a rule made from the sheet defaults to it, and to
+      // the end of the school year for a school's.
+      calendar_label: d.flowCalendarLabel || "",
+      calendar_kind: d.flowCalendarKind || "",
+      // The feed's answer, when it sent one (an older server doesn't).
+      can_hide_by_rule: d.flowCanHideByRule === undefined ? undefined : d.flowCanHideByRule === "1",
+    });
+  }
+
   _starredEventToDetailShape(ev) {
     const date = ev.date || "";
     const dtEnd = ev.dt_end || "";
@@ -4034,6 +4071,12 @@ class KatjaScheduleCard extends HTMLElement {
       _eventId: ev.event_id || "",
       _calendarLabel: ev.calendar_label || "",
       _calendarKind: ev.calendar_kind || "",
+      // The feed's answer (renderer.row_can_hide_by_rule): it carries no
+      // status or flight for the copy to go by. Absent from an older
+      // server, when the copy answers.
+      _canHideByRule: ev.can_hide_by_rule,
+      // The title itself; the summary above may carry _driveLabel's 🚗.
+      _title: ev.what || "",
       _starred: true,
       _dtEnd: dtEnd,
       _recurringEventId: ev.recurring_event_id || "",
