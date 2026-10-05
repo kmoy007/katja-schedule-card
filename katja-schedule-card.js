@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.83.1";
+const CARD_VERSION = "0.84.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1074,7 +1074,7 @@ class KatjaScheduleCard extends HTMLElement {
       // midnight clock for the proposal's actual time.
       const startISO = midnightISO.replace("T00:00:00", `T${t24}`);
       out.push({
-        summary: args.what || "(unnamed)",
+        summary: this._driveLabel(args.what) || "(unnamed)",
         start: {dateTime: startISO},
         end: {dateTime: ""},
         description: `Where: ${args.where || ""}\nWho: ${args.who || ""}`,
@@ -1250,13 +1250,25 @@ class KatjaScheduleCard extends HTMLElement {
       : `${start.h}:${start.m < 10 ? `0${start.m}` : start.m}${ap}`;
   }
 
-  // bug-20260525-094139: a Taxi → LAX row was missing the drive
-  // classification because the check was a literal "drive" substring.
-  // Widen to the household transport vocabulary — mirrors
-  // `renderer.is_drive_like` (Python) and the regex in
-  // templates/schedule.html (web JS). Keep all three in sync.
+  // Whether a row is a drive row: the server's one rule,
+  // `renderer.is_drive_row` — a leading 🚗 (the household's convention:
+  // "🚗 Pickup Grandma from LAX" has no transport word; Ken, 2026-10-04,
+  // "Yes, 🚗 means a drive") or the transport words (bug-20260525-094139:
+  // a Taxi → LAX row). The integration marks every drive row's summary
+  // with a 🚗 by the same rule, so this reads its answer. Held to the
+  // server by tests/drive_row_cases.json (tests/test_ha_card_drive_row.py).
   _isDrive(s) {
-    return !!s && /\b(drive|driving|taxi|uber|lyft|rideshare|cab)\b/i.test(s);
+    return !!s && (/^\s*\u{1F697}/u.test(s)
+      || /\b(drive|driving|taxi|uber|lyft|rideshare|cab)\b/i.test(s));
+  }
+  // A drive row's title shown with one 🚗, put in front unless it carries
+  // one (renderer.drive_row_label): for the rows the card builds from a
+  // feed's `what` (a pending add, a starred event), which the
+  // integration's summary marking doesn't reach. Held to the server's by
+  // tests/test_ha_card_drive_row.py.
+  _driveLabel(s) {
+    s = s || "";
+    return this._isDrive(s) && !s.includes("\u{1F697}") ? `\u{1F697} ${s}` : s;
   }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
 
@@ -4012,7 +4024,7 @@ class KatjaScheduleCard extends HTMLElement {
     desc.push("Starred: 1");
     if (ev.recurring_event_id) desc.push(`RecurringEventId: ${ev.recurring_event_id}`);
     return {
-      summary: ev.what || "",
+      summary: this._driveLabel(ev.what),
       location: ev.where || "",
       description: desc.join("\n"),
       start, end,
