@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.85.2";
+const CARD_VERSION = "0.86.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1050,6 +1050,34 @@ class KatjaScheduleCard extends HTMLElement {
     return null;
   }
 
+  /** The events with the pending proposals folded in (fr-2026-05-07-d),
+   *  as every view draws them:
+   *  - update/hide/accept/merge → annotate the matched event with
+   *    _pendingProposal
+   *  - remove → annotate; the row stays visible (the deletion is what's
+   *    pending, not the disappearance) so the user sees what acceptance
+   *    would drop
+   *  - add → a ghost calendar event, so the proposed row appears on its
+   *    target day even though no real calendar event backs it yet */
+  _withPendingProposals(events) {
+    if (!this._pendingProposals?.length) return events;
+    return events.map(ev => {
+      const m = this._matchPendingProposal(ev);
+      return m ? {...ev, _pendingProposal: m} : ev;
+    }).concat(this._ghostEventsForPendingAdds());
+  }
+
+  /** The events every view draws and a tap opens (`_renderedEvents`): the
+   *  proposal queue folded in, then multi-day spans expanded (fr-2026-05-19
+   *  HA-parity) so each covered day gets a row. Ghosts must be folded in
+   *  first, or their _dtEnd is never read. Continuation copies carry
+   *  `_isContinuation: true` and a `_spanStart` back-reference so
+   *  _renderEvent can style them as faded/italic carry-overs and the click
+   *  handler can still resolve them to the same modal. */
+  _eventsAsDrawn() {
+    return this._fanOutMultiDay(this._withPendingProposals(this._events));
+  }
+
   /** The `_pendingProposal` an event carries: the proposal's kind and id,
    *  and where it came from as the server words it — `source`,
    *  `unverified` and `reason`, from mobile_bootstrap.proposal_provenance.
@@ -2078,6 +2106,27 @@ class KatjaScheduleCard extends HTMLElement {
     return !!this._ruleTitle(ev) && ev._status !== "manual" && !ev._flight;
   }
 
+  /** Whether the sheet offers ✕ Hide… at all: the server's rule,
+   *  `renderer.row_can_hide`, which the web row and the phone read — a row
+   *  with an id that no assistant's change waits on (an add, update or
+   *  remove, which the sheet's Apply and Reject settle), not hidden
+   *  already (↩ Unhide instead). Ken, 2026-10-05: "Hide it, like the web".
+   *  The card reads the integration's lines and the proposal queue, so it
+   *  keeps this copy, held to the server's over tests/hide_rule_cases.json
+   *  (tests/test_hide_rule_options.py); a Starred chip carries the feed's
+   *  answer. The card's own differences: a calendar row waiting at review
+   *  offers its review bar's Hide (new, changed) or none (conflict, a row
+   *  its calendar removed) instead; and a waiting hide, accept or merge
+   *  proposal, which the card's sheet settles with Apply and Reject (the
+   *  web's and the phone's show none), withholds it too. */
+  _hideOffered(ev) {
+    if (!(ev?._eventId || ev?.id)) return false;
+    if (typeof ev._canHide === "boolean") return ev._canHide;
+    if (ev._pendingProposal) return false;
+    return !["hidden_rule", "hidden_oneoff", "new", "changed", "conflict", "orphan"]
+      .includes(ev._status || "");
+  }
+
   /** The row's own title, which a rule is made from and the server
    *  matches against: never the summary's 🚗 the integration (or
    *  _driveLabel) put in front of a drive row's title, or "hide every
@@ -2413,30 +2462,7 @@ class KatjaScheduleCard extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
-    // Fold pending proposals into the visible event list (fr-2026-05-07-d):
-    //  - update/hide/accept/merge → annotate matched event with _pendingProposal
-    //  - remove → annotate; the row stays visible (the deletion is what's
-    //    pending, not the disappearance) so the user sees what acceptance
-    //    would drop
-    //  - add → synthesize a ghost calendar event so the proposed row
-    //    appears on its target day even though no real calendar event
-    //    backs it yet
-    let working;
-    if (this._pendingProposals?.length) {
-      working = this._events.map(ev => {
-        const m = this._matchPendingProposal(ev);
-        return m ? {...ev, _pendingProposal: m} : ev;
-      });
-      working = working.concat(this._ghostEventsForPendingAdds());
-    } else {
-      working = this._events;
-    }
-    // fr-2026-05-19 HA-parity: expand multi-day spans BEFORE grouping
-    // so each covered day gets a row. Continuation copies carry
-    // `_isContinuation: true` and a `_spanStart` back-reference so
-    // _renderEvent can style them as faded/italic carry-overs and
-    // the click handler can still resolve them to the same modal.
-    working = this._fanOutMultiDay(working);
+    const working = this._eventsAsDrawn();
     // _renderEvent and the click handler index into _renderedEvents
     // (this can include ghost rows that aren't in this._events).
     this._renderedEvents = working;
@@ -3012,17 +3038,16 @@ class KatjaScheduleCard extends HTMLElement {
     }
 
     // Hide / Unhide as a standalone detail action — web-app parity
-    // (2026-06-05). For a real, non-pending, non-proposal event the
-    // modal offers Hide (removed from the schedule, revealable via the
-    // 🗑 toggle); an already-hidden row offers Unhide instead. Pending
-    // NEW/CHANGED rows already get Hide via the inline review bar above,
-    // so they're excluded here to avoid a duplicate control.
+    // (2026-06-05). Hide… where `_hideOffered` says (removed from the
+    // schedule, revealable via the 🗑 toggle); an already-hidden row
+    // offers Unhide instead. Pending NEW/CHANGED rows already get Hide via
+    // the inline review bar above, so they're left out to avoid a
+    // duplicate control.
     let hideSection = "";
     const _isHiddenStatus = status === "hidden_rule" || status === "hidden_oneoff";
     if (evId && !pp && _isHiddenStatus) {
       hideSection = `<button class="unhide-event-btn" ${this._actionLoading?"disabled":""}>↩ Unhide</button>`;
-    } else if (evId && !pp && status !== "new" && status !== "changed"
-               && status !== "conflict" && status !== "orphan") {
+    } else if (this._hideOffered(ev)) {
       // Opens the in-modal hide menu (this one / every “X” / containing…)
       // — see _renderHideMenu. No confirm() dialog on this path any more.
       hideSection = `<button class="hide-event-btn" ${this._actionLoading?"disabled":""}>✕ Hide…</button>`;
@@ -4040,6 +4065,8 @@ class KatjaScheduleCard extends HTMLElement {
                   data-flow-recurring-id="${_esc(it.ev.recurring_event_id || "")}"
                   data-flow-calendar-label="${_esc(it.ev.calendar_label || "")}"
                   data-flow-calendar-kind="${_esc(it.ev.calendar_kind || "")}"${
+                    typeof it.ev.can_hide === "boolean"
+                      ? ` data-flow-can-hide="${it.ev.can_hide ? 1 : 0}"` : ""}${
                     typeof it.ev.can_hide_by_rule === "boolean"
                       ? ` data-flow-can-hide-by-rule="${it.ev.can_hide_by_rule ? 1 : 0}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
@@ -4077,7 +4104,8 @@ class KatjaScheduleCard extends HTMLElement {
       // the end of the school year for a school's.
       calendar_label: d.flowCalendarLabel || "",
       calendar_kind: d.flowCalendarKind || "",
-      // The feed's answer, when it sent one (an older server doesn't).
+      // The feed's answers, when it sent them (an older server doesn't).
+      can_hide: d.flowCanHide === undefined ? undefined : d.flowCanHide === "1",
       can_hide_by_rule: d.flowCanHideByRule === undefined ? undefined : d.flowCanHideByRule === "1",
     });
   }
@@ -4109,9 +4137,10 @@ class KatjaScheduleCard extends HTMLElement {
       _eventId: ev.event_id || "",
       _calendarLabel: ev.calendar_label || "",
       _calendarKind: ev.calendar_kind || "",
-      // The feed's answer (renderer.row_can_hide_by_rule): it carries no
-      // status or flight for the copy to go by. Absent from an older
-      // server, when the copy answers.
+      // The feed's answers (renderer.row_can_hide, row_can_hide_by_rule):
+      // it carries no status, flight or waiting change for the copies to
+      // go by. Absent from an older server, when the copies answer.
+      _canHide: ev.can_hide,
       _canHideByRule: ev.can_hide_by_rule,
       // The title itself; the summary above may carry _driveLabel's 🚗.
       _title: ev.what || "",
