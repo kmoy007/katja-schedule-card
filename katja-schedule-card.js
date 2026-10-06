@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.86.1";
+const CARD_VERSION = "0.87.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2109,22 +2109,24 @@ class KatjaScheduleCard extends HTMLElement {
   /** Whether the sheet offers ✕ Hide… at all: the server's rule,
    *  `renderer.row_can_hide`, which the web row and the phone read — a row
    *  with an id that no assistant's change waits on (an add, update or
-   *  remove, which the sheet's Apply and Reject settle), not hidden
-   *  already (↩ Unhide instead). Ken, 2026-10-05: "Hide it, like the web".
+   *  remove, which the sheet's Apply and Reject settle; Ken, 2026-10-05:
+   *  "Hide it, like the web"), not hidden already (↩ Unhide instead), and
+   *  not the poller's live copy of a delayed flight (`_live`, the
+   *  integration's `Live: 1`; "No Hide on the copy"). A calendar row
+   *  waiting at review offers it too, below its review bar's Accept / Hide
+   *  ("Yes, like web and phone").
    *  The card reads the integration's lines and the proposal queue, so it
    *  keeps this copy, held to the server's over tests/hide_rule_cases.json
    *  (tests/test_hide_rule_options.py); a Starred chip carries the feed's
-   *  answer. The card's own differences: a calendar row waiting at review
-   *  offers its review bar's Hide (new, changed) or none (conflict, a row
-   *  its calendar removed) instead; and a waiting hide, accept or merge
+   *  answer. The card's one difference: a waiting hide, accept or merge
    *  proposal, which the card's sheet settles with Apply and Reject (the
-   *  web's and the phone's show none), withholds it too. */
+   *  web's and the phone's show none), withholds it too (Ken, 2026-10-05:
+   *  "Leave as is"). */
   _hideOffered(ev) {
     if (!(ev?._eventId || ev?.id)) return false;
     if (typeof ev._canHide === "boolean") return ev._canHide;
-    if (ev._pendingProposal) return false;
-    return !["hidden_rule", "hidden_oneoff", "new", "changed", "conflict", "orphan"]
-      .includes(ev._status || "");
+    if (ev._pendingProposal || ev._live) return false;
+    return !["hidden_rule", "hidden_oneoff"].includes(ev._status || "");
   }
 
   /** The row's own title, which a rule is made from and the server
@@ -3040,9 +3042,12 @@ class KatjaScheduleCard extends HTMLElement {
     // Hide / Unhide as a standalone detail action — web-app parity
     // (2026-06-05). Hide… where `_hideOffered` says (removed from the
     // schedule, revealable via the 🗑 toggle); an already-hidden row
-    // offers Unhide instead. Pending NEW/CHANGED rows already get Hide via
-    // the inline review bar above, so they're left out to avoid a
-    // duplicate control.
+    // offers Unhide instead. A NEW or CHANGED row gets it too, at the foot
+    // of the sheet below its review bar, as the web and the phone do (Ken,
+    // 2026-10-05): the bar's Hide is the review's answer to that row, this
+    // one opens the menu (this one, every “X”, anything containing…). It
+    // waits, as the bar's buttons do, while an Accept or Hide on the row is
+    // on its way.
     let hideSection = "";
     const _isHiddenStatus = status === "hidden_rule" || status === "hidden_oneoff";
     if (evId && !pp && _isHiddenStatus) {
@@ -3050,7 +3055,7 @@ class KatjaScheduleCard extends HTMLElement {
     } else if (this._hideOffered(ev)) {
       // Opens the in-modal hide menu (this one / every “X” / containing…)
       // — see _renderHideMenu. No confirm() dialog on this path any more.
-      hideSection = `<button class="hide-event-btn" ${this._actionLoading?"disabled":""}>✕ Hide…</button>`;
+      hideSection = `<button class="hide-event-btn" ${(this._actionLoading || inFlight)?"disabled":""}>✕ Hide…</button>`;
     }
 
     // Recheck section. Flight events get TWO affordances side-by-side
