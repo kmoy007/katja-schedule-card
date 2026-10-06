@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.87.0";
+const CARD_VERSION = "0.88.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4431,11 +4431,11 @@ class KatjaScheduleCard extends HTMLElement {
     // moved showed the dead slot and the real one side by side).
     // Pending proposals still win the tag slot — a queued decision is
     // the more urgent fact. Same word as the web, iOS and the review
-    // modal: REMOVED.
+    // modal: REMOVED. Struck through by .event.is-orphan, at full
+    // strength: people read it until the removal is confirmed (Ken,
+    // 2026-10-05), so it is not faded.
     const isOrphan = (ev._status || "") === "orphan";
     const orphanClass = isOrphan ? " is-orphan" : "";
-    const orphanStyle = isOrphan && !flagged
-      ? " opacity:0.55; text-decoration:line-through;" : "";
     const orphanTag = (isOrphan && !pendingTag)
       ? `<span class="orphan-tag" title="No longer in the calendar — stays until the removal is confirmed in Review.">REMOVED</span>`
       : "";
@@ -4454,7 +4454,7 @@ class KatjaScheduleCard extends HTMLElement {
     const summaryPrefix = isContinuation ? "↳ " : "";
     const starIndicator = ev._starred ? `<span class="row-star-indicator" title="Starred">★</span>` : "";
     const spanChip = isSpanStart ? `<span class="multi-day-chip" title="Continues through ${_esc(ev._dtEnd)}">→ ${_esc(ev._dtEnd)}</span>` : "";
-    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${orphanStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   // `opts.zoomed` adds the .is-zoomed sizing class and drops the corner
@@ -4602,14 +4602,13 @@ class KatjaScheduleCard extends HTMLElement {
         // filled background box (fr-2026-05-20). flagged → struck out.
         // Not a tap target: see the day tap targets below.
         // Deleted upstream — see `_renderEvent`. A chip is too small for
-        // a REMOVED tag, so it gets the struck-through, faded treatment
-        // flagged rows already use. Without this the month grid keeps
-        // showing a practice the calendar no longer has.
+        // a REMOVED tag, so it is struck through (.cal-orphan), at full
+        // strength: people read it until the removal is confirmed (Ken,
+        // 2026-10-05). Without this the month grid keeps showing a
+        // practice the calendar no longer has.
         const calOrphan = (ev._status || "") === "orphan";
         const orphanCls = calOrphan ? " cal-orphan" : "";
-        const orphanStyle = (calOrphan && !fl)
-          ? "opacity:0.5;text-decoration:line-through" : "";
-        return `<div class="cal-event${pendingCls}${orphanCls}" style="${fl?"opacity:0.4;text-decoration:line-through":orphanStyle}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
+        return `<div class="cal-event${pendingCls}${orphanCls}" style="${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
       return `<div class="cal-day${dayClass(w)}"><div class="cal-events">${chips}</div></div>`;
     }).join("");
@@ -4924,7 +4923,7 @@ class KatjaScheduleCard extends HTMLElement {
          opens the detail modal. */
       .dv-event.is-stub { padding: 0; background: var(--event-hover); }
       .dv-event.is-flagged { opacity: 0.4; text-decoration: line-through; }
-      .dv-event.is-orphan { opacity: 0.5; text-decoration: line-through; border-left-style: dashed !important; }
+      .dv-event.is-orphan { text-decoration: line-through; border-left-style: dashed !important; }
       .dv-event.is-drive { font-style: italic; opacity: 0.85; }
       .dv-event.is-pending {
         border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
@@ -4990,12 +4989,19 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
       /* Deleted upstream, awaiting confirmation. Deliberately grey and
          quiet rather than alarming — this isn't a problem, it's a row
-         that has stopped being real. Matches the web's tr.row-orphan
-         (dashed edge, muted) and the REMOVED wording used on iOS.
+         that has stopped being real. Like the web's tr.row-orphan, its
+         edge goes grey, and it says REMOVED as iOS does. Struck
+         through, never faded: people read it until the removal is
+         confirmed (Ken, 2026-10-05), so its words, the tag's included,
+         keep the theme's own text colour (#9A9A9A read 2:1 on the light
+         themes). The month chip (.cal-orphan) and the day grid block are
+         the same; the preview's struck row keeps its 0.7, which reads
+         above 4.5:1 on its own dark panel.
          NOTE: no backticks in this block — it lives inside a JS
          template literal, and one would end the string. */
-      .orphan-tag { display: inline-flex; align-items: center; background: rgba(140,140,140,0.18); color: #9A9A9A; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
-      .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); }
+      .orphan-tag { display: inline-flex; align-items: center; background: rgba(140,140,140,0.18); color: var(--text); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
+      .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); text-decoration: line-through; }
+      .cal-event.cal-orphan { text-decoration: line-through; }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
       /* Calendar grid — show ~3 weeks comfortably (even when cells
