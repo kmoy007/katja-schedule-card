@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.86.0";
+const CARD_VERSION = "0.86.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3622,10 +3622,12 @@ class KatjaScheduleCard extends HTMLElement {
 
     // Event blocks. Only include events with concrete start+end datetimes
     // (Pacific). All-day events show in the LIST column already; the
-    // hour-axis is just for timed events.
+    // hour-axis is just for timed events. A hidden row shows (dimmed,
+    // struck through) when the list beside it shows it: the global 🗑 or
+    // this day's own.
     const blocks = (events || [])
       .filter(ev => ev.start?.dateTime && ev.end?.dateTime)
-      .filter(ev => this._showFlagged || !this._isFlagged(ev))
+      .filter(ev => this._dayShowsFlagged(ds) || !this._isFlagged(ev))
       .map((ev, idx) => {
         const s = this._pacificTimeParts(ev.start.dateTime);
         const e = this._pacificTimeParts(ev.end.dateTime);
@@ -4393,8 +4395,8 @@ class KatjaScheduleCard extends HTMLElement {
     const flagged = this._isFlagged(ev);
     // fr-2026-05-11-a: respect either the global flag OR the per-day
     // override. `dayDs` is the iso of the day section this row belongs
-    // to (passed by _renderDay).
-    if (flagged && !this._showFlagged && !(dayDs && this._perDayFlagged.has(dayDs))) return "";
+    // to (passed by _renderDay). The hour axis beside it asks the same.
+    if (flagged && !this._dayShowsFlagged(dayDs)) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
     if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${_esc(m[1])}</span>`; }
