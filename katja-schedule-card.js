@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.89.0";
+const CARD_VERSION = "0.90.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -63,6 +63,16 @@ const DENSITY = {
   spacious: { cardPad: "28px 32px 22px", dayPad: "0 28px", eventPadV: "12px", eventPadH: "6px", eventGap: "16px", eventCols: "100px 1fr", dayHeaderPad: "18px 4px 12px", daySpacing: "8px",  calPad: "12px 16px", calMin: "72px", overviewMin: "340px", headerGap: "16px" },
 };
 
+// Each theme's grey (`muted`, and `eventTextSoft` where it has its own)
+// reads at 4.5:1 on every background it is drawn on: the card, today, a Day
+// View block, a month day (a weekend's and today's tint included), the sheet,
+// the month's day popup (today's tint and the blocks over the sheet), and the
+// light tints on them (a pending row's, a review item's); on the
+// strong ones it is --muted-on-tint (GREY_TINTS). Until card 0.90.0 most
+// themes' read 2.6 to 4.5:1 somewhere; each was darkened
+// or lightened, keeping its hue, only as far as its own backgrounds needed
+// (Ken, 2026-10-06: "Fix them all"). tests/test_ha_card_theme_contrast.py
+// fails on a theme, new or old, whose grey reads below that.
 const THEMES = {
   none: {
     // Inherit colors, fonts, and shape from the active HA dashboard theme.
@@ -101,7 +111,7 @@ const THEMES = {
   },
   dark: {
     name: "Dark",
-    cardBg: "#1e1e2e", text: "#e0e0e0", muted: "#8a8a9a",
+    cardBg: "#1e1e2e", text: "#e0e0e0", muted: "#B0B0BB",
     border: "rgba(255,255,255,0.08)", todayBg: "rgba(255,255,255,0.08)",
     accent: "#4ECDC4", accentBg: "rgba(78,205,196,0.04)",
     headerBg: "#1e1e2e", headerText: "#fff",
@@ -123,7 +133,7 @@ const THEMES = {
   },
   midnight: {
     name: "Midnight",
-    cardBg: "#0d1117", text: "#c9d1d9", muted: "#6e7681",
+    cardBg: "#0d1117", text: "#c9d1d9", muted: "#8E959E",
     border: "rgba(255,255,255,0.06)", todayBg: "rgba(88,166,255,0.08)",
     accent: "#58a6ff", accentBg: "rgba(88,166,255,0.04)",
     headerBg: "#0d1117", headerText: "#f0f6fc",
@@ -134,7 +144,7 @@ const THEMES = {
   },
   warm: {
     name: "Warm",
-    cardBg: "#1a1512", text: "#e8ddd0", muted: "#9a8a7a",
+    cardBg: "#1a1512", text: "#e8ddd0", muted: "#AC9E91",
     border: "rgba(255,220,180,0.1)", todayBg: "rgba(255,180,100,0.1)",
     accent: "#FFB060", accentBg: "rgba(255,180,100,0.05)",
     headerBg: "#1a1512", headerText: "#f0e6d8",
@@ -145,7 +155,7 @@ const THEMES = {
   },
   forest: {
     name: "Forest",
-    cardBg: "#0F1F18", text: "#D8E6DC", muted: "#7A9384",
+    cardBg: "#0F1F18", text: "#D8E6DC", muted: "#93A89B",
     border: "rgba(120,200,150,0.08)", todayBg: "rgba(120,200,150,0.08)",
     accent: "#7DCFA0", accentBg: "rgba(125,207,160,0.04)",
     headerBg: "#0F1F18", headerText: "#E8F3EC",
@@ -156,7 +166,7 @@ const THEMES = {
   },
   rose: {
     name: "Rose",
-    cardBg: "#FFF5F7", text: "#3A1F2A", muted: "#8C5A6F",
+    cardBg: "#FFF5F7", text: "#3A1F2A", muted: "#805266",
     border: "#F2D6DD", todayBg: "rgba(214,80,118,0.06)",
     accent: "#D65076", accentBg: "rgba(214,80,118,0.04)",
     headerBg: "#FFF5F7", headerText: "#3A1F2A",
@@ -167,7 +177,7 @@ const THEMES = {
   },
   ocean: {
     name: "Ocean",
-    cardBg: "#0A1A2A", text: "#CFE3F0", muted: "#6E90AC",
+    cardBg: "#0A1A2A", text: "#CFE3F0", muted: "#88A4BB",
     border: "rgba(100,180,230,0.08)", todayBg: "rgba(100,180,230,0.10)",
     accent: "#4DB6E5", accentBg: "rgba(77,182,229,0.05)",
     headerBg: "#0A1A2A", headerText: "#E8F4FB",
@@ -178,7 +188,7 @@ const THEMES = {
   },
   sunset: {
     name: "Sunset",
-    cardBg: "#21121A", text: "#F2DACE", muted: "#A87A78",
+    cardBg: "#21121A", text: "#F2DACE", muted: "#BA9694",
     border: "rgba(255,150,120,0.10)", todayBg: "rgba(255,120,100,0.12)",
     accent: "#FF7A6E", accentBg: "rgba(255,122,110,0.05)",
     headerBg: "#21121A", headerText: "#FFE8DD",
@@ -189,7 +199,7 @@ const THEMES = {
   },
   mono: {
     name: "Mono",
-    cardBg: "#FAFAFA", text: "#111111", muted: "#666666",
+    cardBg: "#FAFAFA", text: "#111111", muted: "#656565",
     border: "#D9D9D9", todayBg: "rgba(0,0,0,0.05)",
     accent: "#111111", accentBg: "rgba(0,0,0,0.03)",
     headerBg: "#FAFAFA", headerText: "#000000",
@@ -211,7 +221,7 @@ const THEMES = {
   },
   sepia: {
     name: "Sepia",
-    cardBg: "#F4ECD8", text: "#3B2F1F", muted: "#7A6A50",
+    cardBg: "#F4ECD8", text: "#3B2F1F", muted: "#645742",
     border: "#D9C8A4", todayBg: "rgba(120,80,40,0.08)",
     accent: "#8C5A2B", accentBg: "rgba(140,90,43,0.05)",
     headerBg: "#F4ECD8", headerText: "#2A2014",
@@ -227,7 +237,7 @@ const THEMES = {
     // Magazine layout: serif display titles, generous spacing, sharp corners,
     // ALL-CAPS day headers with letter-spacing.
     name: "Editorial",
-    cardBg: "#F5F0EB", text: "#1A1A2E", muted: "#6B7280",
+    cardBg: "#F5F0EB", text: "#1A1A2E", muted: "#5A5F6B",
     border: "rgba(0,0,0,0.10)", todayBg: "rgba(45,90,123,0.08)",
     accent: "#2D5A7B", accentBg: "rgba(45,90,123,0.04)",
     headerBg: "#F5F0EB", headerText: "#1A1A2E",
@@ -245,12 +255,12 @@ const THEMES = {
     radius: "0", radiusSm: "0", radiusXs: "0",
     cardShadow: "0 8px 32px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
     density: "spacious",
-    eventTextStrong: "#1A1A2E", eventTextSoft: "#6B7280",
+    eventTextStrong: "#1A1A2E", eventTextSoft: "#5A5F6B",
   },
   terminal: {
     // Brutalist mono: monospace everywhere, ALL CAPS, square corners, tight.
     name: "Terminal",
-    cardBg: "#0A0A0A", text: "#00FF66", muted: "#4A8060",
+    cardBg: "#0A0A0A", text: "#00FF66", muted: "#5A9C75",
     border: "rgba(0,255,102,0.20)", todayBg: "rgba(0,255,102,0.08)",
     accent: "#00FF66", accentBg: "rgba(0,255,102,0.05)",
     headerBg: "#0A0A0A", headerText: "#00FF66",
@@ -270,7 +280,7 @@ const THEMES = {
     radius: "0", radiusSm: "0", radiusXs: "0",
     cardShadow: "0 0 0 1px rgba(0,255,102,0.30)",
     density: "compact",
-    eventTextStrong: "#00FF66", eventTextSoft: "#4A8060",
+    eventTextStrong: "#00FF66", eventTextSoft: "#5A9C75",
     customCss: `
       .event-summary::before { content: "> "; color: var(--accent); opacity: 0.6; }
       .day-header::before { content: "[ "; }
@@ -282,7 +292,7 @@ const THEMES = {
     // Notebook style: warm cream, hand-feel font, ruled-line dividers, subtle
     // shadow. Generous spacing makes it feel like a physical planner.
     name: "Paper",
-    cardBg: "#FFFCF5", text: "#2A2418", muted: "#8A7E68",
+    cardBg: "#FFFCF5", text: "#2A2418", muted: "#706654",
     border: "rgba(60,40,20,0.12)", todayBg: "rgba(180,120,60,0.08)",
     accent: "#A0522D", accentBg: "rgba(160,82,45,0.04)",
     headerBg: "#FFFCF5", headerText: "#2A2418",
@@ -300,12 +310,12 @@ const THEMES = {
     radius: "4px", radiusSm: "3px", radiusXs: "2px",
     cardShadow: "0 4px 12px rgba(60,40,20,0.10)",
     density: "spacious",
-    eventTextStrong: "#2A2418", eventTextSoft: "#8A7E68",
+    eventTextStrong: "#2A2418", eventTextSoft: "#706654",
   },
   botanical: {
     // Sage green serif, ivory paper, organic & calming.
     name: "Botanical",
-    cardBg: "#F0EDE4", text: "#2D3B2D", muted: "#6B7B6B",
+    cardBg: "#F0EDE4", text: "#2D3B2D", muted: "#4D584D",
     border: "rgba(74,124,89,0.16)", todayBg: "rgba(74,124,89,0.10)",
     accent: "#4A7C59", accentBg: "rgba(74,124,89,0.06)",
     headerBg: "#F0EDE4", headerText: "#2D3B2D",
@@ -321,7 +331,7 @@ const THEMES = {
     radius: "10px", radiusSm: "6px", radiusXs: "4px",
     cardShadow: "0 4px 16px rgba(45,59,45,0.06), 0 1px 3px rgba(45,59,45,0.06)",
     density: "spacious",
-    eventTextStrong: "#2D3B2D", eventTextSoft: "#6B7B6B",
+    eventTextStrong: "#2D3B2D", eventTextSoft: "#4D584D",
   },
   newsprint: {
     // Old broadsheet: aged paper, ink-black slab serif, ALL-CAPS rules.
@@ -354,8 +364,8 @@ const THEMES = {
   bauhaus: {
     // Geometric primaries: black + red + yellow on bone white, hard angles.
     name: "Bauhaus",
-    cardBg: "#F4F1EB", text: "#0A0A0A", muted: "#5A5A5A",
-    border: "#0A0A0A", todayBg: "rgba(218,41,28,0.08)",
+    cardBg: "#F4F1EB", text: "#0A0A0A", muted: "#4C4C4C",
+    border: "#0A0A0A", todayBg: "rgba(255,210,0,0.10)",
     accent: "#DA291C", accentBg: "rgba(218,41,28,0.06)",
     headerBg: "#F4F1EB", headerText: "#0A0A0A",
     eventHover: "rgba(0,0,0,0.04)",
@@ -372,17 +382,17 @@ const THEMES = {
     radius: "0", radiusSm: "0", radiusXs: "0",
     cardShadow: "8px 8px 0 #0A0A0A",
     density: "regular",
-    eventTextStrong: "#0A0A0A", eventTextSoft: "#5A5A5A",
+    eventTextStrong: "#0A0A0A", eventTextSoft: "#4C4C4C",
     customCss: `
       .header { border-bottom: 3px solid #0A0A0A; }
       .header .badge { background: #FFD200; color: #0A0A0A; border: 2px solid #0A0A0A; border-radius: 0; }
-      .day.is-today { border: 3px solid #DA291C; padding: 8px; background: rgba(255,210,0,0.10); }
+      .day.is-today { border: 3px solid #DA291C; padding: 8px; }
     `,
   },
   pastel: {
     // Soft watercolor purples & pinks, friendly rounded.
     name: "Pastel",
-    cardBg: "#FAF6FF", text: "#3A2A4A", muted: "#8A7AA8",
+    cardBg: "#FAF6FF", text: "#3A2A4A", muted: "#60517C",
     border: "rgba(150,120,200,0.15)", todayBg: "rgba(180,150,230,0.12)",
     accent: "#9B7FBF", accentBg: "rgba(155,127,191,0.06)",
     headerBg: "#FAF6FF", headerText: "#3A2A4A",
@@ -398,12 +408,12 @@ const THEMES = {
     radius: "22px", radiusSm: "14px", radiusXs: "8px",
     cardShadow: "0 8px 24px rgba(155,127,191,0.10)",
     density: "spacious",
-    eventTextStrong: "#3A2A4A", eventTextSoft: "#8A7AA8",
+    eventTextStrong: "#3A2A4A", eventTextSoft: "#60517C",
   },
   neon: {
     // Synthwave: deep purple-black, hot pink + cyan accents, glow.
     name: "Neon",
-    cardBg: "#0F0820", text: "#F0E8FF", muted: "#7A6AA0",
+    cardBg: "#0F0820", text: "#F0E8FF", muted: "#978BB5",
     border: "rgba(255,80,200,0.20)", todayBg: "rgba(255,80,200,0.10)",
     accent: "#FF50C8", accentBg: "rgba(255,80,200,0.08)",
     headerBg: "#0F0820", headerText: "#FFEEFF",
@@ -432,7 +442,7 @@ const THEMES = {
   kraft: {
     // Vintage kraft paper, slab serif, rustic warm browns.
     name: "Kraft",
-    cardBg: "#C9A878", text: "#2E1A0A", muted: "#6B4A2A",
+    cardBg: "#C9A878", text: "#2E1A0A", muted: "#3A2817",
     border: "rgba(46,26,10,0.20)", todayBg: "rgba(46,26,10,0.10)",
     accent: "#8B3A1F", accentBg: "rgba(139,58,31,0.08)",
     headerBg: "#C9A878", headerText: "#2E1A0A",
@@ -449,12 +459,12 @@ const THEMES = {
     radius: "2px", radiusSm: "2px", radiusXs: "1px",
     cardShadow: "0 2px 8px rgba(46,26,10,0.20)",
     density: "regular",
-    eventTextStrong: "#2E1A0A", eventTextSoft: "#6B4A2A",
+    eventTextStrong: "#2E1A0A", eventTextSoft: "#3A2817",
   },
   nordic: {
     // Ultra-clean blue-grey, restrained sans, generous whitespace.
     name: "Nordic",
-    cardBg: "#F8F9FB", text: "#1E2328", muted: "#8B919A",
+    cardBg: "#F8F9FB", text: "#1E2328", muted: "#61666F",
     border: "rgba(0,0,0,0.06)", todayBg: "rgba(59,107,155,0.05)",
     accent: "#3B6B9B", accentBg: "rgba(59,107,155,0.04)",
     headerBg: "#F8F9FB", headerText: "#1E2328",
@@ -471,12 +481,12 @@ const THEMES = {
     radius: "8px", radiusSm: "4px", radiusXs: "3px",
     cardShadow: "0 1px 3px rgba(0,0,0,0.04)",
     density: "spacious",
-    eventTextStrong: "#1E2328", eventTextSoft: "#8B919A",
+    eventTextStrong: "#1E2328", eventTextSoft: "#61666F",
   },
   espresso: {
     // Deep coffee browns + cream, warm cafe ambience.
     name: "Espresso",
-    cardBg: "#1F1410", text: "#E8DCC4", muted: "#9A8568",
+    cardBg: "#1F1410", text: "#E8DCC4", muted: "#AF9F88",
     border: "rgba(232,220,196,0.10)", todayBg: "rgba(218,165,32,0.10)",
     accent: "#DAA520", accentBg: "rgba(218,165,32,0.06)",
     headerBg: "#1F1410", headerText: "#F5E8C8",
@@ -493,12 +503,12 @@ const THEMES = {
     radius: "12px", radiusSm: "8px", radiusXs: "4px",
     cardShadow: "0 6px 20px rgba(0,0,0,0.30)",
     density: "regular",
-    eventTextStrong: "#F5E8C8", eventTextSoft: "#9A8568",
+    eventTextStrong: "#F5E8C8", eventTextSoft: "#AF9F88",
   },
   slate: {
     // Modern corporate slate grey + cool teal.
     name: "Slate",
-    cardBg: "#1C2228", text: "#D8DEE6", muted: "#7A8290",
+    cardBg: "#1C2228", text: "#D8DEE6", muted: "#A3A9B2",
     border: "rgba(255,255,255,0.06)", todayBg: "rgba(80,180,180,0.08)",
     accent: "#5EBFB7", accentBg: "rgba(94,191,183,0.05)",
     headerBg: "#1C2228", headerText: "#FFFFFF",
@@ -520,7 +530,7 @@ const THEMES = {
   cyber: {
     // Futuristic deep navy + electric cyan, mono accents, sharp.
     name: "Cyber",
-    cardBg: "#040814", text: "#A8E6F8", muted: "#5A8AB0",
+    cardBg: "#040814", text: "#A8E6F8", muted: "#709ABB",
     border: "rgba(0,229,255,0.14)", todayBg: "rgba(0,229,255,0.10)",
     accent: "#00E5FF", accentBg: "rgba(0,229,255,0.06)",
     headerBg: "#040814", headerText: "#E0FAFF",
@@ -549,7 +559,7 @@ const THEMES = {
   candy: {
     // Playful pinks, mint, lemon — cheerful & high-energy.
     name: "Candy",
-    cardBg: "#FFF8F0", text: "#3A1F3A", muted: "#9A6A8A",
+    cardBg: "#FFF8F0", text: "#3A1F3A", muted: "#7A526C",
     border: "rgba(220,80,150,0.18)", todayBg: "rgba(220,80,150,0.10)",
     accent: "#E04080", accentBg: "rgba(224,64,128,0.06)",
     headerBg: "#FFF8F0", headerText: "#3A1F3A",
@@ -565,12 +575,12 @@ const THEMES = {
     radius: "20px", radiusSm: "14px", radiusXs: "8px",
     cardShadow: "0 10px 30px rgba(224,64,128,0.10), 0 2px 6px rgba(224,64,128,0.06)",
     density: "regular",
-    eventTextStrong: "#3A1F3A", eventTextSoft: "#9A6A8A",
+    eventTextStrong: "#3A1F3A", eventTextSoft: "#7A526C",
   },
   obsidian: {
     // Pure black + razor-thin white rules, ultra-minimal high-end.
     name: "Obsidian",
-    cardBg: "#000000", text: "#E8E8E8", muted: "#7A7A7A",
+    cardBg: "#000000", text: "#E8E8E8", muted: "#888888",
     border: "rgba(255,255,255,0.10)", todayBg: "rgba(255,255,255,0.05)",
     accent: "#FFFFFF", accentBg: "rgba(255,255,255,0.03)",
     headerBg: "#000000", headerText: "#FFFFFF",
@@ -631,6 +641,155 @@ function personColorFor(person, calColor, calLabel) {
     || calColor
     || PERSON_COLORS[CALENDAR_LABEL_PERSON[label] || label]
     || PERSON_COLOR_OTHER;
+}
+
+// The card's words in a fixed hue, each written so it reads on the theme:
+// the status labels (the review queue's NEW, CHANGED, ORPHAN, CONFLICT and
+// AGENT, a row's REVIEW tag, REVIEW · DELETE its own red, a hidden row's
+// tag and the 🗑 button that shows them, a multi-day event's "→ end" chip),
+// the Hide flow (the sheet's ✕ Hide… and ↩ Unhide, the menu's options,
+// preview and buttons), the review queue's Accept and Hide, and the error,
+// warning and drive lines. Each has its hue, the fill behind it (or none),
+// where it sits (LABEL_PLACES), and the fill under a pointer, if it has one. These hues were picked for the dark
+// themes and read about 2:1 on the light ones, so the card writes each one
+// a little darker or lighter, keeping its hue, only as far as it needs to
+// read at LABEL_FLOOR where it sits on the theme (Ken, 2026-10-06: "Fix
+// them all"). tests/test_ha_card_theme_contrast.py holds every one on every
+// theme, and fails on a rule that writes words in a fixed colour.
+const LABELS = {
+  new: ["#4CAF50", null, "review item"],
+  changed: ["#FF9800", null, "review item"],
+  orphan: ["#FF6B6B", null, "review item"],
+  conflict: ["#FF3030", null, "review item"],
+  agent: ["#E0A020", null, "proposal item"],
+  pending: ["#E0A020", "rgba(224,160,32,0.18)", "pending row"],
+  "pending-remove": ["#C8401E", "rgba(200,64,30,0.18)", "removal row"],
+  hidden: ["#FF6B6B", "rgba(255,100,100,0.15)", "row"],
+  span: ["#B07900", "rgba(229,165,16,0.18)", "row"],
+  hide: ["#FF8E8E", "rgba(139,46,46,0.18)", "sheet", "rgba(139,46,46,0.30)"],
+  unhide: ["#7BD7A6", "rgba(46,139,87,0.18)", "sheet", "rgba(46,139,87,0.30)"],
+  broad: ["#E0A020", "rgba(224,160,32,0.18)", "sheet"],
+  error: ["#FF6B6B", "rgba(255,100,100,0.1)", "sheet or drive result"],
+  late: ["#B04030", "rgba(255,100,100,0.15)", "drive result"],
+  arrive: ["#2E8B57", "rgba(46,139,87,0.12)", "drive result"],
+  accept: ["#4CAF50", null, "review queue"],
+  decline: ["#FF6B6B", null, "review queue"],
+  alert: ["#FF6B6B", null, "row"],
+};
+// Where a label sits, and the tints that place can lay under it (any one of
+// them, or none): on an event row (the card, today's tint, and in the
+// month's day popup the sheet and today's tint over it) or in the sheet.
+// The tints are the ones the stylesheet draws (.event.is-pending and its
+// pending-remove, .review-item-calendar, .review-item-proposal,
+// .review-batch, .inline-review-bar, .recheck-result.ok); the test fails if
+// they part.
+const LABEL_PLACES = {
+  row: [["card", "today", "sheet", "sheet today"], []],
+  "pending row": [["card", "today", "sheet", "sheet today"], ["rgba(224,160,32,0.06)"]],
+  "removal row": [["card", "today", "sheet", "sheet today"], ["rgba(200,64,30,0.06)"]],
+  "review item": [["sheet"], ["rgba(80,160,255,0.04)"]],
+  "proposal item": [["sheet"], ["rgba(255,210,0,0.04)"]],
+  "review queue": [["sheet"], [null, "rgba(80,160,255,0.04)", "rgba(255,210,0,0.04)", "rgba(255,210,0,0.05)",
+    "rgba(255,210,0,0.07)"]],
+  // A drive check's result panel, on the theme's own accentBg, and the
+  // sheet's error lines, on that panel or on the bare sheet.
+  "drive result": [["sheet"], ["accentBg"]],
+  "sheet or drive result": [["sheet"], [null, "accentBg"]],
+  sheet: [["sheet"], []],
+};
+// WCAG's 4.5:1 for text, and a little room for rounding.
+const LABEL_FLOOR = 4.6;
+
+// [r, g, b, a] from #rgb, #rrggbb or rgb(a)(); null for anything else (the
+// `none` theme's Home Assistant variables, which only the browser knows).
+function _rgbaOf(css) {
+  const s = String(css || "").trim();
+  let m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m) { const n = parseInt(m[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 1]; }
+  m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m) return [...m[1]].map(h => parseInt(h + h, 16)).concat(1);
+  m = /^rgba?\(([^)]*)\)$/i.exec(s);
+  if (!m) return null;
+  const p = m[1].split(",").map(Number);
+  return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+}
+
+function _over(top, under) {
+  return [0, 1, 2].map(i => top[i] * top[3] + under[i] * (1 - top[3])).concat(1);
+}
+
+function _contrastRatio(a, b) {
+  const lum = c => {
+    const [r, g, bl] = c.slice(0, 3).map(v => {
+      v = Math.round(v) / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// The tinted surfaces grey words sit on that a theme's own grey is not made
+// for, each as the surfaces it lies over and its layers: an event waiting at
+// review in the month (today's tint over it too) and the Day View (on the
+// card, or the sheet in the month's day popup), an 18% amber or red; in the
+// sheet, the Hide menu's options (18% red), its empty preview and a
+// recurring batch's kind chip. Their grey words are `--muted-on-tint`: the
+// theme's grey made to read there, as the web's are on a person's tint.
+const GREY_TINTS = [
+  [["card", "sheet", "month day", "weekend"], ["rgba(224,160,32,0.18)"]],
+  [["month day", "weekend"], ["rgba(200,64,30,0.18)"]],
+  [["sheet"], ["rgba(139,46,46,0.18)"]],
+  [["sheet"], ["rgba(139,46,46,0.30)"]],
+  [["sheet"], ["rgba(140,140,140,0.15)"]],
+  [["sheet"], ["rgba(255,210,0,0.05)", "rgba(255,255,255,0.08)"]],
+];
+
+// The tints words in the accent sit on: the theme's own `accentBg` (the ✈
+// badge, Recheck, Add drive), the zoom buttons' amber (and under a
+// pointer), and the drive-added green. `--accent-ink` reads on each (see `_accentInk`).
+const ACCENT_TINTS = ["accentBg", "rgba(229,165,16,0.2)", "rgba(229,165,16,0.34)", "rgba(46,139,87,0.15)"];
+
+// The colours `_themeVars` computes for a theme, by its THEMES key: they depend
+// only on the theme's own values, and a render draws every panel.
+const THEME_COLOUR_CACHE = new Map();
+
+// `hue` (#rrggbb) as it reads on every one of `grounds`, each an opaque
+// [r, g, b, 1] or a pair [ground, veil], a tint laid over the words as well
+// (the month's today): itself when it already reads at LABEL_FLOOR, else
+// the same hue and saturation made darker on light grounds, or lighter on
+// dark ones, by as little as it takes.
+function readableOn(hue, grounds) {
+  const rgb = _rgbaOf(hue);
+  const pairs = grounds.map(g => (Array.isArray(g[0]) ? g : [g, null]));
+  const ratio = (c, [g, veil]) => (veil
+    ? _contrastRatio(_over(veil, [...c.slice(0, 3), 1]), _over(veil, g)) : _contrastRatio(c, g));
+  const worst = c => Math.min(...pairs.map(p => ratio(c, p)));
+  if (worst(rgb) >= LABEL_FLOOR) return hue;
+  grounds = pairs.map(([g]) => g);
+  const [r, g, b] = rgb.slice(0, 3).map(v => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let l = (max + min) / 2, h = 0, s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h /= 6;
+  }
+  const channel = (p, q, t) => {
+    t = (t + 1) % 1;
+    return t < 1 / 6 ? p + (q - p) * 6 * t : t < 1 / 2 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p;
+  };
+  const light = grounds.reduce((sum, c) => sum + _contrastRatio(c, [0, 0, 0]), 0) / grounds.length
+    > grounds.reduce((sum, c) => sum + _contrastRatio(c, [255, 255, 255]), 0) / grounds.length;
+  for (let step = 1; step <= 200; step++) {
+    const L = Math.min(1, Math.max(0, l + (light ? -step : step) * 0.005));
+    const q = L < 0.5 ? L * (1 + s) : L + s - L * s, p = 2 * L - q;
+    const c = [channel(p, q, h + 1 / 3), channel(p, q, h), channel(p, q, h - 1 / 3)].map(v => Math.round(v * 255));
+    if (worst(c) >= LABEL_FLOOR) return "#" + c.map(v => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+  return light ? "#000000" : "#FFFFFF";
 }
 
 // Every value `view:` accepts. Each one locks the card to that view (no
@@ -807,8 +966,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._dayviewGridHeight = Number(config.dayview_grid_height) || 0;
     this._dayviewGridWidthPct = Number(config.dayview_grid_width_pct) || 0;
     // Theme
-    const themeName = (config.theme || "dark").toLowerCase();
-    this._theme = THEMES[themeName] ? themeName : "dark";
+    this._theme = this._themeKey(config.theme) || "dark";
     // Remember the configured theme so the reset button can return to
     // it after the user has cycled away (fr-2026-05-21).
     this._defaultTheme = this._theme;
@@ -865,9 +1023,9 @@ class KatjaScheduleCard extends HTMLElement {
     // calendar — can override the card's theme. Unset panels inherit `theme`.
     const pt = config.panel_themes || {};
     this._panelThemes = {
-      today:    THEMES[(pt.today    || "").toLowerCase()] ? pt.today.toLowerCase()    : null,
-      tomorrow: THEMES[(pt.tomorrow || "").toLowerCase()] ? pt.tomorrow.toLowerCase() : null,
-      calendar: THEMES[(pt.calendar || "").toLowerCase()] ? pt.calendar.toLowerCase() : null,
+      today:    this._themeKey(pt.today),
+      tomorrow: this._themeKey(pt.tomorrow),
+      calendar: this._themeKey(pt.calendar),
     };
     this._render();
   }
@@ -4426,16 +4584,16 @@ class KatjaScheduleCard extends HTMLElement {
     // _pendingProposal annotation comes from the render-time fold of
     // this._pendingProposals (matchPendingProposal + ghost adds).
     const pending = ev._pendingProposal;
-    let pendingTag = "", pendingClass = "", pendingStyle = "";
+    // A removal waiting is struck through by .event.is-pending.pending-remove,
+    // at full strength: people read it until the removal is decided (Ken,
+    // 2026-10-06; it was at 0.75).
+    let pendingTag = "", pendingClass = "";
     if (pending) {
       const labels = {add: "REVIEW · NEW", update: "REVIEW · CHANGE",
                        remove: "REVIEW · DELETE", hide: "REVIEW · HIDE",
                        accept: "REVIEW · ACCEPT", merge: "REVIEW · MERGE"};
       pendingTag = `<span class="pending-tag pending-${pending.kind}" title="Agent proposed — pending your review on the web schedule.">${labels[pending.kind] || "REVIEW"}</span>`;
       pendingClass = ` is-pending pending-${pending.kind}`;
-      if (pending.kind === "remove") {
-        pendingStyle = " text-decoration:line-through; opacity:0.75;";
-      }
     }
     const flagStyle = flagged ? " opacity:0.4; text-decoration:line-through;" : "";
     const flaggedTag = flagged ? `<span class="flag-tag">${_esc(this._flaggedLabel(ev))}</span>` : "";
@@ -4471,7 +4629,7 @@ class KatjaScheduleCard extends HTMLElement {
     const summaryPrefix = isContinuation ? "↳ " : "";
     const starIndicator = ev._starred ? `<span class="row-star-indicator" title="Starred">★</span>` : "";
     const spanChip = isSpanStart ? `<span class="multi-day-chip" title="Continues through ${_esc(ev._dtEnd)}">→ ${_esc(ev._dtEnd)}</span>` : "";
-    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${pendingStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   // `opts.zoomed` adds the .is-zoomed sizing class and drops the corner
@@ -4660,6 +4818,15 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ====================== STYLES ======================
 
+  // The THEMES key a configured theme name means, matched without regard to
+  // case ("highContrast", "highcontrast", "HighContrast"), or null. Until
+  // 0.90.0 the name was lowercased and looked up as it was, so a camel-cased
+  // key (High Contrast) could never be configured.
+  _themeKey(name) {
+    const want = String(name || "").trim().toLowerCase();
+    return Object.keys(THEMES).find(k => k.toLowerCase() === want) || null;
+  }
+
   _resolveTheme(name) {
     // Merge theme with defaults so every theme is fully populated. fontDisplay
     // falls back to font, eventTextStrong/Soft to text/muted.
@@ -4735,7 +4902,85 @@ class KatjaScheduleCard extends HTMLElement {
       `--cal-min: ${d.calMin}`,
       `--overview-min: ${d.overviewMin}`,
       `--header-gap: ${d.headerGap}`,
+      ...this._readableVars(THEMES[name || this._theme] ? name || this._theme : "dark", t),
     ].join("; ");
+  }
+
+  /** The colours this theme's words are made to read in (see LABELS and
+   *  GREY_TINTS), computed once per theme. */
+  _readableVars(key, t) {
+    if (!THEME_COLOUR_CACHE.has(key)) {
+      THEME_COLOUR_CACHE.set(key, [`--muted-on-tint: ${this._mutedOnTint(t)}`,
+        `--accent-ink: ${this._accentInk(t)}`, ...this._labelVars(t)]);
+    }
+    return THEME_COLOUR_CACHE.get(key);
+  }
+
+  /** The theme's accent as words (today's date in the month, a flight's ✈
+   *  badge, the pickup, drive and zoom buttons, a drive's lines), made to
+   *  read on the card, today, the sheet and a month day (today's tint over
+   *  it too), bare or under each tint in ACCENT_TINTS; on the `none` theme,
+   *  mixed with its text colour. Its marks (borders, dots, outlines) stay
+   *  the accent itself. */
+  _accentInk(t) {
+    const card = _rgbaOf(t.cardBg), today = _rgbaOf(t.todayBg), sheet = _rgbaOf(t.modalBg);
+    const day = _rgbaOf(t.calDayBg), weekend = _rgbaOf(t.weekendBg), veil = _rgbaOf(t.calTodayBg);
+    const tints = ACCENT_TINTS.map(c => (c === "accentBg" ? _rgbaOf(t.accentBg) : _rgbaOf(c)));
+    if (!(card && today && sheet && day && weekend && veil && _rgbaOf(t.accent) && tints.every(Boolean))) {
+      return "color-mix(in srgb, var(--accent) 50%, var(--text))";
+    }
+    const grounds = [card, _over(today, card), sheet, _over(today, sheet)]
+      .flatMap(s => [s, ...tints.map(tint => _over(tint, s))]);
+    // Today's date sits on the bare card or a weekend's tint (its cell has no
+    // fill of its own), with today's tint laid over it; a chip's on a day.
+    const month = _over(day, card), wk = _over(weekend, card);
+    return readableOn(t.accent, [...grounds, month, [month, veil], [card, veil], wk, [wk, veil]]);
+  }
+
+  /** The theme's grey as it reads on every surface in GREY_TINTS; on the
+   *  `none` theme, mixed half and half with its text colour, as the labels
+   *  are. */
+  _mutedOnTint(t) {
+    const card = _rgbaOf(t.cardBg), day = _rgbaOf(t.calDayBg), weekend = _rgbaOf(t.weekendBg);
+    const veil = _rgbaOf(t.calTodayBg), sheet = _rgbaOf(t.modalBg);
+    if (!(card && day && weekend && veil && sheet && _rgbaOf(t.muted))) {
+      return "color-mix(in srgb, var(--muted) 50%, var(--text))";
+    }
+    const under = { card, "month day": _over(day, card), weekend: _over(weekend, card), sheet };
+    const grounds = GREY_TINTS.flatMap(([on, layers]) => on.flatMap(s => {
+      const g = layers.map(_rgbaOf).reduce((acc, l) => _over(l, acc), under[s]);
+      return s === "month day" || s === "weekend" ? [g, [g, veil]] : [g];
+    }));
+    return readableOn(t.muted, grounds);
+  }
+
+  /** `--label-<name>` (and `--label-<name>-fill`) for every entry in
+   *  LABELS, written to read where it sits on this theme: each of its
+   *  place's surfaces (LABEL_PLACES) under each of the place's tints and
+   *  the label's fill.
+   *  The `none` theme's colours are Home Assistant's, which only the
+   *  browser knows, so there each label is its hue mixed half and half with
+   *  the theme's text colour, which moves it towards whatever reads on that
+   *  background. */
+  _labelVars(t) {
+    const card = _rgbaOf(t.cardBg), today = _rgbaOf(t.todayBg), sheet = _rgbaOf(t.modalBg);
+    const accentBg = _rgbaOf(t.accentBg);
+    const surfaces = card && today && sheet && accentBg
+      ? { card, today: _over(today, card), sheet, "sheet today": _over(today, sheet) } : null;
+    const layer = c => (c === "accentBg" ? accentBg : _rgbaOf(c));
+    return Object.entries(LABELS).flatMap(([name, [hue, fill, place, hover]]) => {
+      let colour = `color-mix(in srgb, ${hue} 50%, var(--text))`;
+      if (surfaces) {
+        const [on, tints] = LABEL_PLACES[place];
+        const grounds = on.flatMap(s => (tints.length ? tints : [null]).flatMap(tint =>
+          [fill, hover].filter((f, i) => i === 0 || f).map(f =>
+            [tint, f].filter(Boolean).map(layer).reduce((g, l) => _over(l, g), surfaces[s]))));
+        colour = readableOn(hue, grounds);
+      }
+      return [`--label-${name}: ${colour}`]
+        .concat(fill ? [`--label-${name}-fill: ${fill}`] : [])
+        .concat(hover ? [`--label-${name}-hover: ${hover}`] : []);
+    });
   }
 
   _getStyles() {
@@ -4781,8 +5026,8 @@ class KatjaScheduleCard extends HTMLElement {
       .header .version { font-size: 11px; color: var(--muted); opacity: 0.5; }
       .view-toggle { display: flex; background: var(--accent-bg); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px; }
       .toggle-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 8px 16px; border-radius: var(--radius-pill-inner); font-family: var(--font); font-size: 13px; font-weight: 600; transition: all 0.15s; }
-      .toggle-btn.active { background: var(--accent); color: var(--card-bg); }
-      .toggle-btn:hover:not(.active) { color: var(--header-text); opacity: 0.7; }
+      .toggle-btn.active { background: var(--accent-ink); color: var(--card-bg); }
+      .toggle-btn:hover:not(.active) { color: var(--header-text); }
       .theme-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
         cursor: pointer; padding: 4px 10px; border-radius: var(--radius-sm); font-family: var(--font); font-size: 11px; font-weight: 600;
         transition: all 0.15s; }
@@ -4806,7 +5051,7 @@ class KatjaScheduleCard extends HTMLElement {
       .flagged-btn { background: transparent; border: 1px solid var(--border); color: var(--muted);
         cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); font-size: 11px; transition: all 0.15s; }
       .flagged-btn:hover { border-color: var(--accent); }
-      .flagged-btn.active { background: rgba(255,100,100,0.15); color: #FF6B6B; border-color: #FF6B6B; }
+      .flagged-btn.active { background: var(--label-hidden-fill); color: var(--label-hidden); border-color: #FF6B6B; }
       /* fr-2026-05-11-a: per-day 🗑 button inside .day-header — smaller
          + less prominent than the global one, but uses the same active
          colors so the affordance is consistent. */
@@ -4815,8 +5060,8 @@ class KatjaScheduleCard extends HTMLElement {
         border-radius: var(--radius-sm); font-size: 10px; margin-left: 6px;
         opacity: 0.55; transition: all 0.15s; vertical-align: middle; }
       .day-flagged-btn:hover { opacity: 1; border-color: var(--border); }
-      .day-flagged-btn.active { background: rgba(255,100,100,0.15);
-        color: #FF6B6B; border-color: #FF6B6B; opacity: 1; }
+      .day-flagged-btn.active { background: var(--label-hidden-fill);
+        color: var(--label-hidden); border-color: #FF6B6B; opacity: 1; }
       .floating-theme { position: absolute; top: 6px; right: 6px; z-index: 5; display: flex; gap: 4px; }
       .overview-top { display: grid; grid-template-columns: 3fr 2fr; gap: 0; border-bottom: 1px solid var(--border); min-height: var(--overview-min); }
       /* Today panel — clearly highlighted: a thick accent left border,
@@ -4945,6 +5190,9 @@ class KatjaScheduleCard extends HTMLElement {
       .dv-event.is-pending {
         border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
       }
+      /* A removal waiting: struck through at full strength, as on the web's
+         day grid (2026-10-06). */
+      .dv-event.is-pending.pending-remove { text-decoration: line-through; }
       .dv-ev-time { font-size: calc(10px + var(--katja-font-adjust, 0px)); color: var(--muted);
                     font-variant-numeric: tabular-nums; font-weight: 600;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4954,6 +5202,8 @@ class KatjaScheduleCard extends HTMLElement {
                     -webkit-box-orient: vertical; }
       .dv-ev-where { font-size: calc(10.5px + var(--katja-font-adjust, 0px)); color: var(--muted);
                      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* On a waiting block's 18% amber, the grey made to read there. */
+      .dv-event.is-pending .dv-ev-time, .dv-event.is-pending .dv-ev-where { color: var(--muted-on-tint); }
       /* NOW line — red rule + dot. JS positions on render; the minute
          ticker re-renders the card so the line creeps. */
       .dv-now { position: absolute; left: 44px; right: 0; height: 2px;
@@ -4986,24 +5236,26 @@ class KatjaScheduleCard extends HTMLElement {
       .event-location { font-size: 14px; color: var(--muted); margin-top: 2px; }
       .event.is-drive .event-summary { font-style: italic; color: var(--muted); font-weight: 400; }
       .event.is-drive .event-time { color: var(--muted); opacity: 0.6; }
-      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
-      .flag-tag { display: inline-flex; align-items: center; background: rgba(255,100,100,0.15); color: #FF6B6B; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; }
+      .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent-ink); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
+      .flag-tag { display: inline-flex; align-items: center; background: var(--label-hidden-fill); color: var(--label-hidden); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; }
       /* fr-2026-05-18-a / fr-2026-05-19-b parity: the "→ end-date"
          chip on the start day of a multi-day span, and a star
          indicator (★) for household-starred events. Both sit inline
          in the .event-summary alongside the other tags. */
-      .multi-day-chip { display: inline-flex; align-items: center; background: rgba(229,165,16,0.18); color: #B07900; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.2px; }
+      .multi-day-chip { display: inline-flex; align-items: center; background: var(--label-span-fill); color: var(--label-span); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.2px; }
       .row-star-indicator { color: #E5A510; font-size: 14px; line-height: 1; margin-left: 2px; }
       .event.is-continuation .event-summary { color: var(--muted); }
       /* fr-2026-05-07-d: pending-proposal badge in parity with web.
          Amber for add/update (needs review), red for remove (would
          delete). Dashed border on the row + amber tint signals "agent
          proposed, not yet committed" without confusing the Calendar's
-         per-person color coding. */
-      .pending-tag { display: inline-flex; align-items: center; background: rgba(224,160,32,0.18); color: #E0A020; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
-      .pending-tag.pending-remove { background: rgba(200,64,30,0.18); color: #C8401E; }
+         per-person color coding. The tags, like every status label, take
+         their colour from LABELS through --label-*, made to read on the
+         theme. A removal waiting is struck through at full strength. */
+      .pending-tag { display: inline-flex; align-items: center; background: var(--label-pending-fill); color: var(--label-pending); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
+      .pending-tag.pending-remove { background: var(--label-pending-remove-fill); color: var(--label-pending-remove); }
       .event.is-pending { border-left: 3px dashed #E0A020; padding-left: calc(var(--event-pad-h) - 3px); background: rgba(224,160,32,0.06); }
-      .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); }
+      .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); text-decoration: line-through; }
       /* Deleted upstream, awaiting confirmation. Deliberately grey and
          quiet rather than alarming — this isn't a problem, it's a row
          that has stopped being real. Like the web's tr.row-orphan, its
@@ -5109,7 +5361,7 @@ class KatjaScheduleCard extends HTMLElement {
       .cal-past { opacity: 0.35; }
       .cal-weekend { background: var(--weekend-bg); }
       .cal-date { font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--muted); }
-      .cal-today .cal-date { color: var(--accent); font-size: 15px; }
+      .cal-today .cal-date { color: var(--accent-ink); font-size: 15px; }
       .cal-events { display: flex; flex-direction: column; gap: 1px; }
       /* Single-day events: a person-colored bullet + text, no filled
          background box (fr-2026-05-20). */
@@ -5124,7 +5376,12 @@ class KatjaScheduleCard extends HTMLElement {
          background tint. The ⚠ prefix on .cal-event-text flags it
          even when a glance misses the dashed edge. */
       .cal-event.cal-pending { background: rgba(224,160,32,0.18); border-right: 2px dashed #E0A020; padding-right: 2px; }
-      .cal-event.cal-pending-remove { background: rgba(200,64,30,0.18); border-right-color: #C8401E; text-decoration: line-through; opacity: 0.85; }
+      .cal-event.cal-pending-remove { background: rgba(200,64,30,0.18); border-right-color: #C8401E; text-decoration: line-through; }
+      /* A waiting chip's grey time sits on its 18% tint (today's over it
+         too): --muted-on-tint, the theme's grey made to read there. A
+         removal waiting is struck through at full strength (Ken,
+         2026-10-06; it was at 0.85). */
+      .cal-event.cal-pending .cal-event-time { color: var(--muted-on-tint); }
 
       /* fr-2026-05-20: near-fullscreen zoom for the Starred grid + the
          month calendar grid. The expand button on each view opens a
@@ -5136,7 +5393,7 @@ class KatjaScheduleCard extends HTMLElement {
         display: inline-flex; align-items: center; gap: 6px;
         background: rgba(229,165,16,0.18);
         border: 1px solid rgba(229,165,16,0.45);
-        color: var(--accent);
+        color: var(--accent-ink);
         font-size: 15px; font-weight: 700; font-family: inherit;
         border-radius: 9px; padding: 8px 14px;
         cursor: pointer; flex: 0 0 auto;
@@ -5155,8 +5412,11 @@ class KatjaScheduleCard extends HTMLElement {
       .zoom-overlay {
         position: fixed; inset: 3vh 2vw; z-index: 96;
         display: flex; flex-direction: column;
-        background: var(--card-bg, var(--ha-card-background, #1a1a1a));
+        /* The theme's card over an opaque fallback, as .modal-dayview does:
+           until 0.90.0 the fallback came second and won, so the zoomed
+           month and Starred were drawn on #1a1a1a in every theme. */
         background-color: #1a1a1a;
+        background-image: linear-gradient(var(--card-bg, #1a1a1a), var(--card-bg, #1a1a1a));
         border: 1px solid var(--border);
         border-radius: var(--radius);
         box-shadow: 0 18px 60px rgba(0,0,0,0.7);
@@ -5188,7 +5448,7 @@ class KatjaScheduleCard extends HTMLElement {
         flex: 0 0 auto;
         background: rgba(229,165,16,0.2);
         border: 1px solid rgba(229,165,16,0.45);
-        color: var(--accent);
+        color: var(--accent-ink);
         font-size: 16px; font-weight: 700; font-family: inherit;
         border-radius: 999px; padding: 9px 22px; cursor: pointer;
       }
@@ -5349,7 +5609,7 @@ class KatjaScheduleCard extends HTMLElement {
       .review-body { padding: 12px 16px 18px; }
       .review-loading, .review-empty, .review-error {
         text-align: center; padding: 32px 16px; color: var(--muted); }
-      .review-error { color: #FF6B6B; }
+      .review-error { color: var(--label-alert); }
       /* Inline banners above the queue (fallback warning + action
          error). Different from .review-error which takes over the
          whole body — these keep the queue visible underneath. */
@@ -5357,17 +5617,17 @@ class KatjaScheduleCard extends HTMLElement {
         font-size: 13px; line-height: 1.4; margin-bottom: 10px; }
       .review-banner-warn { background: rgba(255,210,0,0.10);
         border: 1px solid rgba(255,210,0,0.4); color: var(--text-strong); }
-      .review-banner-err { background: rgba(255,107,107,0.10);
-        border: 1px solid rgba(255,107,107,0.4); color: #FF6B6B; }
+      .review-banner-err { background: var(--label-error-fill);
+        border: 1px solid rgba(255,107,107,0.4); color: var(--label-error); }
       .review-bulkbar { display: flex; flex-wrap: wrap; gap: 6px;
         padding: 8px 0 12px; border-bottom: 1px solid var(--border);
         margin-bottom: 12px; }
       .review-btn-bulk { padding: 6px 10px; font-size: 12px;
         font-weight: 600; border-radius: var(--radius-sm); border: 1px solid var(--border);
         background: transparent; cursor: pointer; color: var(--text-soft); }
-      .review-btn-bulk.accept { border-color: #4CAF50; color: #4CAF50; }
+      .review-btn-bulk.accept { border-color: #4CAF50; color: var(--label-accept); }
       .review-btn-bulk.reject, .review-btn-bulk.hide {
-        border-color: #FF6B6B; color: #FF6B6B; }
+        border-color: #FF6B6B; color: var(--label-decline); }
       .review-btn-bulk:hover { filter: brightness(1.2); }
       .review-btn-bulk:disabled { opacity: 0.4; cursor: not-allowed; }
       .review-section { margin-bottom: 14px; }
@@ -5387,7 +5647,7 @@ class KatjaScheduleCard extends HTMLElement {
          agent-proposal-apply path. */
       .review-batch-kind { display: inline-block; font-size: 10px;
         font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
-        color: var(--muted); background: rgba(255,255,255,0.08);
+        color: var(--muted-on-tint); background: rgba(255,255,255,0.08);
         padding: 1px 6px; border-radius: 999px; margin-right: 6px; }
       .review-group { border: 1px solid var(--border);
         border-radius: var(--radius-sm); margin-bottom: 8px; overflow: hidden; }
@@ -5396,11 +5656,11 @@ class KatjaScheduleCard extends HTMLElement {
       .review-item + .review-item { border-top: 1px dashed var(--border); }
       .review-item-calendar { background: rgba(80,160,255,0.04); }
       .review-item-proposal { background: rgba(255,210,0,0.04); }
-      .review-status-new .review-item-tag { color: #4CAF50; }
-      .review-status-changed .review-item-tag { color: #FF9800; }
-      .review-status-orphan .review-item-tag { color: #FF6B6B; }
-      .review-status-conflict .review-item-tag { color: #FF3030; }
-      .review-tag-agent { color: #E0A020; }
+      .review-status-new .review-item-tag { color: var(--label-new); }
+      .review-status-changed .review-item-tag { color: var(--label-changed); }
+      .review-status-orphan .review-item-tag { color: var(--label-orphan); }
+      .review-status-conflict .review-item-tag { color: var(--label-conflict); }
+      .review-tag-agent { color: var(--label-agent); }
       .review-item-tag { font-size: 10px; font-weight: 700;
         letter-spacing: 0.04em; min-width: 56px; padding-top: 3px; }
       .review-item-main { flex: 1; font-size: 14px; line-height: 1.4; }
@@ -5412,9 +5672,9 @@ class KatjaScheduleCard extends HTMLElement {
         border: 1px solid var(--border); background: transparent;
         font-size: 12px; font-weight: 600; cursor: pointer;
         color: var(--text-soft); }
-      .review-btn.accept { color: #4CAF50; border-color: #4CAF50; }
+      .review-btn.accept { color: var(--label-accept); border-color: #4CAF50; }
       .review-btn.reject, .review-btn.hide {
-        color: #FF6B6B; border-color: #FF6B6B; }
+        color: var(--label-decline); border-color: #FF6B6B; }
       .review-btn:hover { filter: brightness(1.2); }
       .review-btn:disabled { opacity: 0.4; cursor: wait; }
       /* The pending pill becomes a button on the header (tap → opens
@@ -5464,20 +5724,20 @@ class KatjaScheduleCard extends HTMLElement {
         font-weight: 700; }
 
       /* Recheck */
-      .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
-      .hide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
-      .hide-event-btn:hover { background: rgba(139,46,46,0.30); }
+      .recheck-btn { display: block; width: 100%; margin-top: 14px; padding: 12px; border: none; border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--accent-ink); font-family: var(--font); font-size: 15px; font-weight: 600; cursor: pointer; }
+      .hide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: var(--label-hide-fill); color: var(--label-hide); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .hide-event-btn:hover { background: var(--label-hide-hover); }
       .hide-event-btn:disabled { opacity: 0.5; cursor: wait; }
       /* Hide menu (2026-09-23) — in-modal replacement for Skip + confirm()
          Hide. Colours are the .hide-event-btn reds so it reads the same on
          the dark HA theme; text sits on the theme's own surface. */
       .hide-menu { font-family: var(--font); font-size: 14px; line-height: 1.4; color: var(--text, inherit); }
       .hm-title { font-size: 15px; font-weight: 700; margin: 2px 0 12px; }
-      .hm-option { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-family: var(--font); cursor: pointer; }
-      .hm-option:hover { background: rgba(139,46,46,0.30); }
+      .hm-option { display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px 12px; border: 1px solid #8B2E2E; border-radius: var(--radius-sm); background: var(--label-hide-fill); color: var(--label-hide); font-family: var(--font); cursor: pointer; }
+      .hm-option:hover { background: var(--label-hide-hover); }
       .hm-option:disabled { opacity: 0.5; cursor: wait; }
       .hm-option-label { display: block; font-size: 14px; font-weight: 700; }
-      .hm-option-hint { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; color: var(--muted); }
+      .hm-option-hint { display: block; margin-top: 3px; font-size: 12px; font-weight: 400; color: var(--muted-on-tint); }
       .hm-pattern-fixed { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-weight: 600; margin-bottom: 8px; }
       .hm-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: inherit; font-family: var(--font); font-size: 14px; }
       .hm-input:focus { outline: 2px solid #FF8E8E; outline-offset: 1px; }
@@ -5488,24 +5748,24 @@ class KatjaScheduleCard extends HTMLElement {
       .hm-pills { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 200px; }
       .hm-pill { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; cursor: pointer; user-select: none; }
       .hm-pill input { margin: 0; accent-color: #FF8E8E; }
-      .hm-pill.on { border-color: #FF8E8E; background: rgba(139,46,46,0.18); color: #FF8E8E; font-weight: 600; }
-      .hm-preview { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(139,46,46,0.18); color: #FF8E8E; font-size: 13px; }
-      .hm-preview.none { background: rgba(140,140,140,0.15); color: var(--muted); }
-      .hm-preview.broad { background: rgba(224,160,32,0.18); color: #E0A020; }
+      .hm-pill.on { border-color: #FF8E8E; background: var(--label-hide-fill); color: var(--label-hide); font-weight: 600; }
+      .hm-preview { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--label-hide-fill); color: var(--label-hide); font-size: 13px; }
+      .hm-preview.none { background: rgba(140,140,140,0.15); color: var(--muted-on-tint); }
+      .hm-preview.broad { background: var(--label-broad-fill); color: var(--label-broad); }
       .hm-preview ul { margin: 6px 0 0; padding-left: 18px; }
       .hm-preview li { margin: 2px 0; }
       .hm-count { font-weight: 700; }
       .hm-broad { margin-bottom: 6px; font-weight: 600; }
       .hm-summary { margin: 0 0 8px; font-size: 14px; }
-      .hm-error { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(255,100,100,0.1); color: #FF6B6B; font-size: 13px; }
+      .hm-error { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--label-error-fill); color: var(--label-error); font-size: 13px; }
       .hm-buttons { display: flex; gap: 8px; margin-top: 14px; }
       .hm-buttons button { flex: 1; padding: 11px 12px; border-radius: var(--radius-sm); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .hm-buttons .hm-back { border: 1px solid var(--border); background: transparent; color: var(--muted); }
-      .hm-buttons .hm-continue, .hm-buttons .hm-create { border: 1px solid #8B2E2E; background: rgba(139,46,46,0.18); color: #FF8E8E; }
-      .hm-buttons .hm-continue:hover, .hm-buttons .hm-create:hover { background: rgba(139,46,46,0.30); }
+      .hm-buttons .hm-continue, .hm-buttons .hm-create { border: 1px solid #8B2E2E; background: var(--label-hide-fill); color: var(--label-hide); }
+      .hm-buttons .hm-continue:hover, .hm-buttons .hm-create:hover { background: var(--label-hide-hover); }
       .hm-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: rgba(46,139,87,0.18); color: #7BD7A6; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
-      .unhide-event-btn:hover { background: rgba(46,139,87,0.30); }
+      .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: var(--label-unhide-fill); color: var(--label-unhide); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
+      .unhide-event-btn:hover { background: var(--label-unhide-hover); }
       .unhide-event-btn:disabled { opacity: 0.5; cursor: wait; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
@@ -5517,45 +5777,47 @@ class KatjaScheduleCard extends HTMLElement {
       .pickup-q { font-size: 16px; font-weight: 700; }
       .pickup-hint { font-size: 12px; color: var(--muted); margin: 3px 0 10px; }
       .pickup-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-      .pickup-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
+      .pickup-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
       .pickup-btn[disabled] { opacity: 0.5; cursor: default; }
-      .pickup-btn.chosen { background: var(--accent); color: #fff; border-color: var(--accent); }
-      .pickup-btn.chosen:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+      .pickup-btn.chosen { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
+      .pickup-btn.chosen:hover:not(:disabled) { background: var(--accent-ink); border-color: var(--accent-ink); }
       .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
       .pickup-result.bad { background: rgba(178,63,43,0.15); }
       .pickup-result.plain { background: transparent; border: 1px solid rgba(127,127,127,0.3); }
       .pickup-instead { padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); font-size: 13px; line-height: 1.45; color: var(--muted); }
-      .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent); }
+      .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
       .origin-btn:hover { border-color: var(--accent); background: var(--accent-bg); }
       .origin-btn:disabled { opacity: 0.5; cursor: wait; }
       .origin-hint { font-size: 11px; color: var(--muted); }
 
       .recheck-result { margin-top: 12px; padding: 14px; border-radius: var(--radius-sm); font-size: 14px; line-height: 1.5; }
-      .recheck-result.ok { background: var(--accent-bg); color: var(--accent); }
-      .recheck-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
+      .recheck-result.ok { background: var(--accent-bg); color: var(--accent-ink); }
+      .recheck-result.err { background: var(--label-error-fill); color: var(--label-error); }
       .recheck-route { font-size: 13px; margin-bottom: 3px; color: var(--text-soft); }
       .recheck-label { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; margin-right: 4px; }
       .recheck-duration { margin-top: 8px; font-size: 18px; }
       .recheck-pessimistic { font-size: 13px; color: var(--muted); }
       .recheck-via { font-size: 12px; color: var(--muted); margin-top: 4px; }
       .recheck-arrive { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
-                        background: rgba(46,139,87,0.12); color: #2E8B57; font-size: 14px; }
+                        background: var(--label-arrive-fill); color: var(--label-arrive); font-size: 14px; }
       .recheck-late   { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
-                        background: rgba(255,100,100,0.15); color: #B04030; font-size: 13px; }
-      .traffic-ok { margin-top: 6px; font-size: 13px; color: var(--accent); }
-      .traffic-warn { margin-top: 6px; font-size: 13px; color: #FF6B6B; background: rgba(255,100,100,0.1); padding: 8px; border-radius: var(--radius-sm); }
-      .traffic-meta { font-size: 11px; opacity: 0.7; }
+                        background: var(--label-late-fill); color: var(--label-late); font-size: 13px; }
+      .traffic-ok { margin-top: 6px; font-size: 13px; color: var(--accent-ink); }
+      .traffic-warn { margin-top: 6px; font-size: 13px; color: var(--label-error); background: var(--label-error-fill); padding: 8px; border-radius: var(--radius-sm); }
+      /* The departure and checked-at times, smaller but at full strength: the
+         household checks them (CLAUDE.md, Drive Times; 0.7 until 0.90.0). */
+      .traffic-meta { font-size: 11px; }
 
       .action-btn { display: block; width: 100%; margin-top: 10px; padding: 12px; border: none; border-radius: var(--radius-sm); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .action-btn:disabled { opacity: 0.5; cursor: wait; }
-      .action-btn.action-update { background: #2E8B57; color: white; }
+      .action-btn.action-update { background: #2C8453; color: white; }
       .action-btn.action-update:hover { background: #1F6B41; }
-      .action-btn.action-add-drive { background: var(--accent-bg); color: var(--accent); }
+      .action-btn.action-add-drive { background: var(--accent-bg); color: var(--accent-ink); }
       .action-btn.action-add-drive:hover { filter: brightness(1.15); }
 
       .action-result { margin-top: 10px; padding: 12px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.4; }
-      .action-result.ok { background: rgba(46,139,87,0.15); color: var(--accent); }
-      .action-result.err { background: rgba(255,100,100,0.1); color: #FF6B6B; }
+      .action-result.ok { background: rgba(46,139,87,0.15); color: var(--accent-ink); }
+      .action-result.err { background: var(--label-error-fill); color: var(--label-error); }
 
       /* ============================================================
          Starred view — 6-month long-range. Wall-display tuned: large
@@ -5594,7 +5856,7 @@ class KatjaScheduleCard extends HTMLElement {
         text-align: center; padding: 40px 20px; color: var(--muted);
         font-size: 14px;
       }
-      .starred-err { color: #FF6B6B; }
+      .starred-err { color: var(--label-alert); }
       .starred-empty { text-align: center; padding: 50px 20px; color: var(--muted); }
       .s-empty-star { font-size: 56px; opacity: 0.3; line-height: 1; }
       .s-empty-title { font-size: 17px; font-weight: 600; margin-top: 12px; color: var(--text); }
@@ -5638,7 +5900,7 @@ class KatjaScheduleCard extends HTMLElement {
       .g-cell.starred { background: rgba(229,165,16,0.20); color: #E5A510;
                          font-weight: 700; font-size: 12px; }
       .g-cell.today { outline: 1.5px solid var(--accent); outline-offset: -1px;
-                       color: var(--accent); font-weight: 700; }
+                       color: var(--accent-ink); font-weight: 700; }
       .starred-split-up { background: rgba(255,255,255,0.03);
                            border: 1px solid var(--border); border-radius: 8px;
                            padding: 10px 12px; }
@@ -5712,7 +5974,7 @@ class KatjaScheduleCard extends HTMLElement {
       }
       .flow-sticky-head .flow-jump-today {
         margin-left: auto; font-size: 12px; font-weight: 600;
-        color: var(--accent); background: rgba(229,165,16,0.18);
+        color: var(--accent-ink); background: rgba(229,165,16,0.18);
         border: 1px solid rgba(229,165,16,0.4);
         border-radius: 999px; padding: 2px 10px; cursor: pointer;
       }
