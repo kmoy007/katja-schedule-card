@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.90.0";
+const CARD_VERSION = "0.90.1";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2766,7 +2766,11 @@ class KatjaScheduleCard extends HTMLElement {
     // would sit on top of its "+ tomorrow ›".
     const isPreview = locked === "preview";
     const pvList = isPreview ? this.shadowRoot.querySelector(".pv-list") : null;
-    const pvPrev = pvList ? { top: pvList.scrollTop, day: pvList.dataset.day } : null;
+    // A list replaced before it ever had a size was never scrolled: it
+    // hands on the position it was given (see _wirePreview).
+    const pvPrev = !pvList ? null
+      : this._pvPlaced === pvList ? { top: pvList.scrollTop, day: pvList.dataset.day }
+      : this._pvPrev || null;
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
       <ha-card${isPreview ? ' class="pv-host"' : ""}><div class="card${locked ? " card-locked" : ""}${isPreview ? " card-preview" : ""}${seamClasses}">
@@ -3738,17 +3742,38 @@ class KatjaScheduleCard extends HTMLElement {
 
   /** After a render. `prev` is the list as it was before it: while the
    *  hold lasts the new list keeps that scroll position (same day only),
-   *  otherwise it scrolls past the events that have ended. */
+   *  otherwise it scrolls past the events that have ended.
+   *
+   *  In Home Assistant the list has no size yet when this runs: every
+   *  render makes a new <ha-card>, which draws what is inside it only
+   *  after its own first update, a moment later. A scroll set before then
+   *  is lost and the "N more" count comes out 0 (Ken, 2026-10-06: the
+   *  button showed only after a scroll by hand, until the next render hid
+   *  it again). So the list is placed when it first has a size, and the
+   *  button follows any later change of size. */
   _wirePreview(prev) {
     const root = this.shadowRoot.querySelector(".pv");
+    this._pvResize?.disconnect();
+    this._pvResize = null;
+    this._pvPrev = prev;
     if (!root) return;
     const list = root.querySelector(".pv-list");
     const rh = this._previewRowHeight;
-    if (list && prev && this._previewHeld() && prev.day === list.dataset.day) {
-      list.scrollTop = prev.top;
-      this._previewArrow(list);
-    } else {
-      this._previewSync();
+    const place = () => {
+      if (!list.clientHeight) return;
+      if (this._pvPlaced === list) { this._previewArrow(list); return; }
+      this._pvPlaced = list;
+      if (prev && this._previewHeld() && prev.day === list.dataset.day) {
+        list.scrollTop = prev.top;
+        this._previewArrow(list);
+      } else {
+        this._previewSync();
+      }
+    };
+    if (list) {
+      place();
+      this._pvResize = new ResizeObserver(place);
+      this._pvResize.observe(list);
     }
     list?.addEventListener("scroll", () => this._previewArrow(list), { passive: true });
     // Three rows down, landing on a row boundary. The button is outside
