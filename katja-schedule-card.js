@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.88.0";
+const CARD_VERSION = "0.89.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -980,6 +980,9 @@ class KatjaScheduleCard extends HTMLElement {
             // title, sent when the summary shows it with a 🚗 it doesn't
             // carry. A hide rule is made from it (_ruleTitle).
             _title: meta.title || "",
+            // "Drive: none" (integration 0.34.0+): the server offers no
+            // Drive time to this place (home, still TBC; _hasAddress).
+            _noDrive: meta.drive === "none",
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1157,7 +1160,7 @@ class KatjaScheduleCard extends HTMLElement {
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid"
-          || k === "title") {
+          || k === "title" || k === "drive") {
         out[k] = m[2].trim();
       }
     }
@@ -1428,7 +1431,16 @@ class KatjaScheduleCard extends HTMLElement {
     for (const ds of (days || [])) n += this._flaggedCountForDay(grouped[ds] || []);
     return n;
   }
-  _hasAddress(ev) { return !!(ev.location && ev.location.trim().length > 3); }
+  /** Whether the sheet offers Drive time to the event's place: the
+   *  server's answer (drive_time.drive_time_offered: not home, not still
+   *  TBC, more than three characters), as the Starred feed's
+   *  `can_look_up_drive` or the integration's `Drive: none` line. The
+   *  length check answers only for an older server or integration. */
+  _hasAddress(ev) {
+    if (typeof ev._canLookUpDrive === "boolean") return ev._canLookUpDrive;
+    if (ev._noDrive) return false;
+    return !!(ev.location && ev.location.trim().length > 3);
+  }
   _hasArrow(ev) { return (ev.summary||"").includes("→") || (ev.location||"").includes("→"); }
 
   _getDaysFromToday(n) {
@@ -4075,7 +4087,9 @@ class KatjaScheduleCard extends HTMLElement {
                     typeof it.ev.can_hide === "boolean"
                       ? ` data-flow-can-hide="${it.ev.can_hide ? 1 : 0}"` : ""}${
                     typeof it.ev.can_hide_by_rule === "boolean"
-                      ? ` data-flow-can-hide-by-rule="${it.ev.can_hide_by_rule ? 1 : 0}"` : ""}>
+                      ? ` data-flow-can-hide-by-rule="${it.ev.can_hide_by_rule ? 1 : 0}"` : ""}${
+                    typeof it.ev.can_look_up_drive === "boolean"
+                      ? ` data-flow-can-drive="${it.ev.can_look_up_drive ? 1 : 0}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -4114,6 +4128,7 @@ class KatjaScheduleCard extends HTMLElement {
       // The feed's answers, when it sent them (an older server doesn't).
       can_hide: d.flowCanHide === undefined ? undefined : d.flowCanHide === "1",
       can_hide_by_rule: d.flowCanHideByRule === undefined ? undefined : d.flowCanHideByRule === "1",
+      can_look_up_drive: d.flowCanDrive === undefined ? undefined : d.flowCanDrive === "1",
     });
   }
 
@@ -4149,6 +4164,8 @@ class KatjaScheduleCard extends HTMLElement {
       // go by. Absent from an older server, when the copies answer.
       _canHide: ev.can_hide,
       _canHideByRule: ev.can_hide_by_rule,
+      // And whether it offers Drive time (drive_time.drive_time_offered).
+      _canLookUpDrive: ev.can_look_up_drive,
       // The title itself; the summary above may carry _driveLabel's 🚗.
       _title: ev.what || "",
       _starred: true,
