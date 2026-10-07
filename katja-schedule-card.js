@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.90.1";
+const CARD_VERSION = "0.91.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -699,6 +699,18 @@ const LABEL_PLACES = {
 };
 // WCAG's 4.5:1 for text, and a little room for rounding.
 const LABEL_FLOOR = 4.6;
+// WCAG's 3:1 for a symbol that is not words (1.4.11, non-text contrast),
+// and the same room: the ★ of a starred event, a Starred bar's ‹ › arrows.
+const SYMBOL_FLOOR = 3.1;
+// The ★ of a starred event (a row's, the sheet's, the Starred view's) in
+// its amber made to read at SYMBOL_FLOOR where it sits on the theme
+// (`--star-mark`, `_starMark`): on an event row (the card, today, the day
+// popup's sheet, and a waiting row's tints, LABEL_PLACES), on the sheet
+// under the pointer, and on the Starred view's header. Until card 0.91.0
+// it was this amber everywhere: 1.0:1 on Kraft's Starred header, 2.2:1 on Light (Ken,
+// 2026-10-06: "Yes, finish like that").
+const STAR = "#E5A510";
+const STARRED_HEAD_TINT = "rgba(229,165,16,0.12)";
 
 // [r, g, b, a] from #rgb, #rrggbb or rgb(a)(); null for anything else (the
 // `none` theme's Home Assistant variables, which only the browser knows).
@@ -712,6 +724,17 @@ function _rgbaOf(css) {
   if (!m) return null;
   const p = m[1].split(",").map(Number);
   return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+}
+
+// `hsl(h s% l%)` as #RRGGBB, the way a browser rounds it.
+function _hslHex(h, s, l) {
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return "#" + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
 function _over(top, under) {
@@ -757,16 +780,16 @@ const THEME_COLOUR_CACHE = new Map();
 
 // `hue` (#rrggbb) as it reads on every one of `grounds`, each an opaque
 // [r, g, b, 1] or a pair [ground, veil], a tint laid over the words as well
-// (the month's today): itself when it already reads at LABEL_FLOOR, else
-// the same hue and saturation made darker on light grounds, or lighter on
-// dark ones, by as little as it takes.
-function readableOn(hue, grounds) {
+// (the month's today): itself when it already reads at `floor` (words, or
+// SYMBOL_FLOOR for a symbol), else the same hue and saturation made darker
+// on light grounds, or lighter on dark ones, by as little as it takes.
+function readableOn(hue, grounds, floor = LABEL_FLOOR) {
   const rgb = _rgbaOf(hue);
   const pairs = grounds.map(g => (Array.isArray(g[0]) ? g : [g, null]));
   const ratio = (c, [g, veil]) => (veil
     ? _contrastRatio(_over(veil, [...c.slice(0, 3), 1]), _over(veil, g)) : _contrastRatio(c, g));
   const worst = c => Math.min(...pairs.map(p => ratio(c, p)));
-  if (worst(rgb) >= LABEL_FLOOR) return hue;
+  if (worst(rgb) >= floor) return hue;
   grounds = pairs.map(([g]) => g);
   const [r, g, b] = rgb.slice(0, 3).map(v => v / 255);
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -787,7 +810,7 @@ function readableOn(hue, grounds) {
     const L = Math.min(1, Math.max(0, l + (light ? -step : step) * 0.005));
     const q = L < 0.5 ? L * (1 + s) : L + s - L * s, p = 2 * L - q;
     const c = [channel(p, q, h + 1 / 3), channel(p, q, h), channel(p, q, h - 1 / 3)].map(v => Math.round(v * 255));
-    if (worst(c) >= LABEL_FLOOR) return "#" + c.map(v => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+    if (worst(c) >= floor) return "#" + c.map(v => v.toString(16).padStart(2, "0")).join("").toUpperCase();
   }
   return light ? "#000000" : "#FFFFFF";
 }
@@ -923,17 +946,12 @@ class KatjaScheduleCard extends HTMLElement {
     // Starred view (6-month long-range, household-starred only). Data
     // comes from the katja_schedule/list_starred_events WS command on
     // first switch; refreshed on every _fetchEvents tick so star
-    // changes from the web propagate within ~5 min. Three sub-layouts
-    // (A vertical agenda, B mini-grid + agenda, C timeline ribbon)
-    // selected by a sub-toggle inside the view header; default A.
+    // changes from the web propagate within ~5 min. Drawn as the D Flow
+    // grid alone (the A, B, C and E sub-layouts went in fr-2026-05-20).
     this._starredEvents = [];
     this._starredFetched = false;
     this._starredLoading = false;
     this._starredError = null;
-    this._starredSubLayout = (() => {
-      try { return localStorage.getItem("katja_starred_layout_v1") || "a"; }
-      catch (_) { return "a"; }
-    })();
   }
 
   set hass(hass) {
@@ -972,8 +990,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._defaultTheme = this._theme;
     this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view (LOCKED_VIEWS).
-    // `starred` makes a dedicated long-range Starred card (the view
-    // carries its own D/E/A/B/C sub-layout picker) — fr-2026-05-20,
+    // `starred` makes a dedicated long-range Starred card (the D Flow
+    // grid) — fr-2026-05-20,
     // the dropdown previously had no Starred lock so Starred was only
     // reachable via the full-card toggle.
     // `preview` is the compact today list for the small wall panels
@@ -2804,11 +2822,7 @@ class KatjaScheduleCard extends HTMLElement {
 
     // Bind events
     this.shadowRoot.querySelectorAll(".toggle-btn").forEach(btn => btn.addEventListener("click", () => this._switchView(btn.dataset.view)));
-    this.shadowRoot.querySelectorAll(".s-pick-btn").forEach(btn => btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this._switchStarredSubLayout(btn.getAttribute("data-starred-sub") || "a");
-    }));
-    // D Flow / E M3 chip taps open the detail modal (_starredChipDetail).
+    // D Flow chip taps open the detail modal (_starredChipDetail).
     this.shadowRoot.querySelectorAll(".flow-event").forEach(btn => btn.addEventListener("click", (e) => {
       e.stopPropagation();
       this._openDetail(this._starredChipDetail(btn.dataset));
@@ -3925,8 +3939,7 @@ class KatjaScheduleCard extends HTMLElement {
 
   // ============================================================
   // Starred view — 6-month long-range, household-starred only.
-  // Data fetched via katja_schedule/list_starred_events WS command;
-  // three sub-layouts selected by an in-view sub-toggle.
+  // Data fetched via katja_schedule/list_starred_events WS command.
   // ============================================================
   async _fetchStarredEvents() {
     if (!this._hass || this._starredLoading) return;
@@ -3946,15 +3959,8 @@ class KatjaScheduleCard extends HTMLElement {
     }
   }
 
-  _switchStarredSubLayout(sub) {
-    if (!["a", "b", "c", "d", "e"].includes(sub)) return;
-    this._starredSubLayout = sub;
-    try { localStorage.setItem("katja_starred_layout_v1", sub); } catch (_) {}
-    this._render();
-  }
-
   // ============================================================
-  // D Flow / E M3 helpers (fr-2026-05-19 HA-parity sweep, port of
+  // D Flow helpers (fr-2026-05-19 HA-parity sweep, port of
   // web templates/schedule.html:6240-6772). All date math runs on
   // 'YYYY-MM-DD' Pacific strings so DST never shifts a chip into
   // the wrong column. Kept as instance methods (rather than module
@@ -4040,24 +4046,25 @@ class KatjaScheduleCard extends HTMLElement {
     // family; per-event lightness varies independently so a screenful
     // of events stays distinct inside that band. Themes with no
     // derivable accent hue (`none`, `mono`) fall back to the full wheel.
-    // `text` is the chip's text color.
     const h = this._flowHash(what || "?");
     const accentHue = this._accentHue();
     const hue = accentHue != null
       ? (accentHue + (h % 71) - 35 + 360) % 360
       : h % 360;
-    const lShift = Math.floor(h / 71) % 11;  // 0..10, independent of hue
-    if (this._isDarkTheme()) {
-      return {
-        bg: `hsl(${hue} 38% ${16 + lShift}%)`,
-        edge: `hsl(${hue} 46% ${40 + lShift}%)`,
-        text: `hsl(${hue} 55% 82%)`,
-      };
-    }
+    return this._flowTones(hue, Math.floor(h / 71) % 11);  // shade 0..10, independent of hue
+  }
+  // A Starred bar's colours for its hue and shade (`lShift`) on this
+  // theme. `text` is the chip's text color; `mark`, its ‹ › arrows: the
+  // edge's hue made to read at SYMBOL_FLOOR on the chip.
+  _flowTones(hue, lShift) {
+    const [bg, edge, text] = this._isDarkTheme()
+      ? [[38, 16 + lShift], [46, 40 + lShift], `hsl(${hue} 55% 82%)`]
+      : [[68, 90 - lShift], [42, 55], "#1F1F1F"];
     return {
-      bg: `hsl(${hue} 68% ${90 - lShift}%)`,
-      edge: `hsl(${hue} 42% 55%)`,
-      text: "#1F1F1F",
+      bg: `hsl(${hue} ${bg[0]}% ${bg[1]}%)`,
+      edge: `hsl(${hue} ${edge[0]}% ${edge[1]}%)`,
+      text,
+      mark: readableOn(_hslHex(hue, ...edge), [_rgbaOf(_hslHex(hue, ...bg))], SYMBOL_FLOOR),
     };
   }
   // Very subtle per-event background tint for the calendar-grid
@@ -4119,17 +4126,8 @@ class KatjaScheduleCard extends HTMLElement {
   }
 
   // D Flow main renderer. Returns an HTML string; the caller appends
-  // into the starred pane. `variant === "m3"` only changes which CSS
-  // selector matches; the DOM is identical so toggling sub-layouts
-  // never requires a re-fetch.
-  _renderStarredFlow(events, variant, opts = {}) {
-    if (!events.length) {
-      return `<div class="starred-empty">
-        <div class="s-empty-star">☆</div>
-        <div class="s-empty-title">No starred events in the next 6 months</div>
-        <div class="s-empty-hint">Star events from the web app to populate this view.</div>
-      </div>`;
-    }
+  // into the starred pane.
+  _renderStarredFlow(events, opts = {}) {
     const today = this._todayStr();
     const startMon = this._isoMondayOf(today);
     const WEEKS = 26;
@@ -4201,10 +4199,9 @@ class KatjaScheduleCard extends HTMLElement {
 
     const todayParts = this._isoToParts(today);
     const todayLabel = `${MONTH_NAMES[todayParts.m - 1]} ${todayParts.y}`;
-    const variantCls = variant === "m3" ? " is-m3" : "";
     const zoomCls = opts.zoomed ? " is-zoomed" : "";
     let html = `
-      <div class="starred-layout-d${variantCls}${zoomCls}">
+      <div class="starred-layout-d${zoomCls}">
         <div class="flow-sticky-head">
           <span class="flow-sticky-label">${todayLabel}</span>
           <button type="button" class="flow-jump-today">Jump to today</button>
@@ -4227,13 +4224,6 @@ class KatjaScheduleCard extends HTMLElement {
       html += `<div class="flow-week-num">${this._isoWeekNum(w.mon)}</div>`;
       for (let d = 0; d < 7; d++) {
         const iso = this._isoAddDays(w.mon, d);
-        const bgCls = ["flow-day-bg"];
-        if (iso === today) bgCls.push("is-today");
-        else if (iso < today) bgCls.push("is-past");
-        html += `<div class="${bgCls.join(" ")}" style="grid-column:${d + 2};grid-row:1 / -1;"></div>`;
-      }
-      for (let d = 0; d < 7; d++) {
-        const iso = this._isoAddDays(w.mon, d);
         const p = this._isoToParts(iso);
         const cls = ["flow-day-num"];
         if (iso === today) cls.push("is-today");
@@ -4247,14 +4237,14 @@ class KatjaScheduleCard extends HTMLElement {
         html += `<div class="${cls.join(" ")}" style="grid-column:${d + 2};"${todayAttr}>${inner}</div>`;
       }
       for (const it of w.items) {
-        const { bg, edge, text } = this._flowColors(it.ev.what);
+        const { bg, edge, text, mark } = this._flowColors(it.ev.what);
         const cls = ["flow-event"];
         if (it.continuesLeft) cls.push("is-continuation");
         if (it.continuesRight) cls.push("is-continued");
         const titleText = `${it.ev.what || ""} · ${it.ev.date || ""}${it.ev.time ? " " + it.ev.time : ""}`;
         html += `
           <button type="button" class="${cls.join(" ")}"
-                  style="--c:${bg};--ce:${edge};--ct:${text};--col-start:${it.colStart + 2};--col-end:${it.colEnd + 3};--track:${it.track + 2};"
+                  style="--c:${bg};--ce:${edge};--ct:${text};--cm:${mark};--col-start:${it.colStart + 2};--col-end:${it.colEnd + 3};--track:${it.track + 2};"
                   title="${_esc(titleText)}"
                   data-flow-event-id="${_esc(it.ev.event_id || "")}"
                   data-flow-date="${_esc(it.ev.date || "")}"
@@ -4286,7 +4276,7 @@ class KatjaScheduleCard extends HTMLElement {
 
   // Convert a starred-events feed row into the shape `_openDetail`
   // expects (mirrors what _fetchEvents pushes for live calendar
-  // entries). Used by the D Flow / E M3 chip click handler since
+  // entries). Used by the D Flow chip click handler since
   // starred events come from a separate WS feed and aren't in
   // this._renderedEvents.
   /** The detail a Starred chip opens, from its data-flow-* attributes (a
@@ -4363,9 +4353,9 @@ class KatjaScheduleCard extends HTMLElement {
     const zoomed = !!opts.zoomed;
     const evs = this._starredEvents || [];
     // Starred is always the D Flow layout — the contiguous 6-month
-    // grid. The D/E/A/B/C sub-layout selector was removed
-    // (fr-2026-05-20): D is the one that gets used, the picker was
-    // just clutter on a wall display.
+    // grid. The sub-layout selector and the A, B, C and E layouts went
+    // (fr-2026-05-20, their code in 0.91.0): D is the one that gets
+    // used, the picker was just clutter on a wall display.
     const zoomBtn = zoomed ? "" :
       `<button type="button" class="view-zoom-btn" data-zoom-open="starred" title="Zoom in to full screen">${ZOOM_ICON}<span>Zoom</span></button>`;
     const header = zoomed ? "" : `
@@ -4387,7 +4377,7 @@ class KatjaScheduleCard extends HTMLElement {
         <div class="s-empty-hint">Star events from the web app to populate this view.</div>
       </div>`;
     } else {
-      pane = this._renderStarredFlow(evs, undefined, { zoomed });
+      pane = this._renderStarredFlow(evs, { zoomed });
     }
     if (zoomed) return pane;
     return `<div class="starred-wrap">${header}<div class="starred-pane">${pane}</div></div>`;
@@ -4417,150 +4407,6 @@ class KatjaScheduleCard extends HTMLElement {
         </div>
         <div class="zoom-content">${content}</div>
       </div>`;
-  }
-
-  _renderStarredAgenda(evs) {
-    const today = this._todayStr();
-    const t = this._isoParts(today);
-    const monthsToShow = [];
-    for (let i = 0; i < 7; i++) {
-      const dt = new Date(t.y, t.m - 1 + i, 1);
-      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
-      monthsToShow.push(key);
-    }
-    const byMonth = {};
-    for (const ev of evs) {
-      const k = (ev.date || "").slice(0, 7);
-      (byMonth[k] = byMonth[k] || []).push(ev);
-    }
-    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return monthsToShow.map(key => {
-      const [y, m] = key.split("-");
-      const label = `${MN[parseInt(m, 10) - 1]} ${y}`;
-      const rows = byMonth[key] || [];
-      if (!rows.length) {
-        return `<section class="s-month s-month-empty">
-          <h3>${label}</h3>
-          <div class="s-empty-line">· nothing starred ·</div>
-        </section>`;
-      }
-      const items = rows.map(ev => {
-        const p = this._isoParts(ev.date);
-        const dt = new Date(p.y, p.m - 1, p.d);
-        const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-        const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
-          ? _esc(ev.time) : "all day";
-        return `<div class="s-item">
-          <div class="s-item-date">${dow} ${p.d}</div>
-          <div class="s-item-body">
-            <div class="s-item-what">${_esc(ev.what || "")}</div>
-            ${ev.where ? `<div class="s-item-where">${_esc(ev.where)}</div>` : ""}
-          </div>
-          <div class="s-item-time">${timeLabel}</div>
-        </div>`;
-      }).join("");
-      return `<section class="s-month">
-        <h3>${label}</h3>
-        ${items}
-      </section>`;
-    }).join("");
-  }
-
-  _renderStarredGridSplit(evs) {
-    const today = this._todayStr();
-    const t = this._isoParts(today);
-    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const starredDays = new Set(evs.map(e => e.date));
-    const grids = [];
-    for (let i = 0; i < 6; i++) {
-      const dt = new Date(t.y, t.m - 1 + i, 1);
-      const y = dt.getFullYear(), m = dt.getMonth() + 1;
-      const first = new Date(y, m - 1, 1);
-      const daysInMonth = new Date(y, m, 0).getDate();
-      const firstWd = (first.getDay() + 6) % 7;
-      const cells = [];
-      for (let j = 0; j < firstWd; j++) cells.push(`<span class="g-cell empty"></span>`);
-      for (let d = 1; d <= daysInMonth; d++) {
-        const iso = `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-        const has = starredDays.has(iso);
-        const isToday = iso === today;
-        cells.push(`<span class="g-cell${has?" starred":""}${isToday?" today":""}" title="${iso}${has?" — starred":""}">${has?"★":d}</span>`);
-      }
-      grids.push(`<div class="s-mini-month">
-        <h4>${MN[m-1]}</h4>
-        <div class="g-dow"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
-        <div class="g-grid">${cells.join("")}</div>
-      </div>`);
-    }
-    const upNext = evs.slice(0, 12).map(ev => {
-      const p = this._isoParts(ev.date);
-      const dt = new Date(p.y, p.m - 1, p.d);
-      const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-      const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
-        ? _esc(ev.time) : "all day";
-      return `<div class="s-up-row">
-        <div class="s-up-date">${dow} ${p.d} ${MN[p.m-1]}</div>
-        <div class="s-up-what">${_esc(ev.what || "")}</div>
-        <div class="s-up-time">${timeLabel}${ev.where?` · ${_esc(ev.where)}`:""}</div>
-      </div>`;
-    }).join("");
-    return `<div class="starred-split">
-      <div class="starred-split-grids"><div class="s-grid-wrap">${grids.join("")}</div></div>
-      <aside class="starred-split-up">
-        <h3>Up next</h3>
-        ${upNext || `<div class="s-empty-line">— nothing starred —</div>`}
-      </aside>
-    </div>`;
-  }
-
-  _renderStarredTimeline(evs) {
-    const today = this._todayStr();
-    const t0p = this._isoParts(today);
-    const t0 = new Date(t0p.y, t0p.m - 1, t0p.d).getTime();
-    const horizonDt = new Date(t0p.y, t0p.m - 1, t0p.d + 183);
-    const t1 = horizonDt.getTime();
-    const span = Math.max(1, t1 - t0);
-    const MN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const ticks = [];
-    for (let i = 0; i < 7; i++) {
-      const dt = new Date(t0p.y, t0p.m - 1 + i, 1);
-      const pct = Math.max(0, Math.min(100, (dt.getTime() - t0) / span * 100));
-      ticks.push(`<div class="tl-tick" style="left:${pct}%">
-        <div class="tl-tick-line"></div>
-        <div class="tl-tick-label">${MN[dt.getMonth()]}</div>
-      </div>`);
-    }
-    const marks = evs.map(ev => {
-      const p = this._isoParts(ev.date);
-      const ms = new Date(p.y, p.m - 1, p.d).getTime();
-      const pct = Math.max(0, Math.min(100, (ms - t0) / span * 100));
-      return `<div class="tl-mark" style="left:${pct}%" title="${_esc(ev.what||"")} — ${ev.date}"><span class="tl-mark-star">★</span></div>`;
-    }).join("");
-    const list = evs.map(ev => {
-      const p = this._isoParts(ev.date);
-      const dt = new Date(p.y, p.m - 1, p.d);
-      const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
-      const timeLabel = (ev.time && ev.time !== "—" && !/^all\s*day/i.test(ev.time))
-        ? _esc(ev.time) : "all day";
-      return `<div class="tl-row">
-        <div class="tl-row-date">${dow} ${p.d} ${MN[p.m-1]}</div>
-        <div class="tl-row-what">${_esc(ev.what||"")}</div>
-        <div class="tl-row-time">${timeLabel}</div>
-      </div>`;
-    }).join("");
-    return `<div class="starred-timeline">
-      <div class="tl-axis">
-        <div class="tl-axis-line"></div>
-        ${ticks.join("")}
-        ${marks}
-      </div>
-      <div class="tl-list">${list}</div>
-    </div>`;
-  }
-
-  _isoParts(iso) {
-    const [ys, ms, ds] = (iso || "").split("-");
-    return { y: parseInt(ys, 10), m: parseInt(ms, 10), d: parseInt(ds, 10) };
   }
 
   // Inner content of a day-header: colored dot, formatted date label,
@@ -4936,9 +4782,25 @@ class KatjaScheduleCard extends HTMLElement {
   _readableVars(key, t) {
     if (!THEME_COLOUR_CACHE.has(key)) {
       THEME_COLOUR_CACHE.set(key, [`--muted-on-tint: ${this._mutedOnTint(t)}`,
-        `--accent-ink: ${this._accentInk(t)}`, ...this._labelVars(t)]);
+        `--accent-ink: ${this._accentInk(t)}`, `--star-mark: ${this._starMark(t)}`, ...this._labelVars(t)]);
     }
     return THEME_COLOUR_CACHE.get(key);
+  }
+
+  /** STAR as the theme's ★ (see STAR): a symbol, so made to read at
+   *  SYMBOL_FLOOR, not as words; on the `none` theme, mixed with its text
+   *  colour, as the labels are. */
+  _starMark(t) {
+    const card = _rgbaOf(t.cardBg), today = _rgbaOf(t.todayBg), sheet = _rgbaOf(t.modalBg);
+    const hover = _rgbaOf(t.eventHover);
+    if (!(card && today && sheet && hover)) return `color-mix(in srgb, ${STAR} 50%, var(--text))`;
+    const rowTints = [...LABEL_PLACES["pending row"][1], ...LABEL_PLACES["removal row"][1]].map(_rgbaOf);
+    const rows = [card, _over(today, card), sheet, _over(today, sheet)]
+      .flatMap(s => [s, ...rowTints.map(tint => _over(tint, s))]);
+    // The pointer's tint is the sheet's star button's; laid on the card and
+    // today as well, as the test that reads every rule's own fill does.
+    const pointer = [card, _over(today, card), sheet].map(s => _over(hover, s));
+    return readableOn(STAR, [...rows, ...pointer, _over(_rgbaOf(STARRED_HEAD_TINT), card)], SYMBOL_FLOOR);
   }
 
   /** The theme's accent as words (today's date in the month, a flight's ✈
@@ -5268,7 +5130,7 @@ class KatjaScheduleCard extends HTMLElement {
          indicator (★) for household-starred events. Both sit inline
          in the .event-summary alongside the other tags. */
       .multi-day-chip { display: inline-flex; align-items: center; background: var(--label-span-fill); color: var(--label-span); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.2px; }
-      .row-star-indicator { color: #E5A510; font-size: 14px; line-height: 1; margin-left: 2px; }
+      .row-star-indicator { color: var(--star-mark); font-size: 14px; line-height: 1; margin-left: 2px; }
       .event.is-continuation .event-summary { color: var(--muted); }
       /* fr-2026-05-07-d: pending-proposal badge in parity with web.
          Amber for add/update (needs review), red for remove (would
@@ -5613,11 +5475,10 @@ class KatjaScheduleCard extends HTMLElement {
       /* fr-2026-05-19 HA-parity: star toggle in the modal header
          mirrors the web app's row-star — gold when filled, muted
          outline when not, scales down briefly on click for haptic
-         affordance. */
+         affordance. The gold is the theme's --star-mark, a symbol's 3:1. */
       .modal-star { background: transparent; border: none; color: var(--muted); font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); line-height: 1; }
-      .modal-star:hover { background: var(--event-hover); color: #E5A510; }
-      .modal-star.is-starred { color: #E5A510; }
-      .modal-star.is-starred:hover { color: #C48E0E; }
+      .modal-star:hover { background: var(--event-hover); color: var(--star-mark); }
+      .modal-star.is-starred { color: var(--star-mark); }
       .modal-star:active { transform: scale(0.92); }
       .modal-star:disabled { opacity: 0.5; cursor: wait; }
       .modal-body { padding: 16px 20px; }
@@ -5846,8 +5707,10 @@ class KatjaScheduleCard extends HTMLElement {
 
       /* ============================================================
          Starred view — 6-month long-range. Wall-display tuned: large
-         type for at-a-glance reading from across the room; star marks
-         use the same amber as the web app for cross-surface consistency.
+         type for at-a-glance reading from across the room; the star is
+         the web app's amber, made to read on the theme (--star-mark).
+         Every word in it reads at 4.5:1 and every symbol at 3:1 in every
+         theme (tests/e2e/test_ha_card_labels.py reads it as drawn).
          ============================================================ */
       .starred-wrap { padding: 14px var(--card-pad); }
       /* fr-2026-05-21: when the card is locked to the Starred view there
@@ -5865,17 +5728,8 @@ class KatjaScheduleCard extends HTMLElement {
       .starred-head-title { font-size: 18px; font-weight: 700;
                             color: var(--header-text);
                             display: flex; align-items: center; gap: 8px; }
-      .s-star { color: #E5A510; font-size: 22px; }
-      .starred-count { font-size: 13px; font-weight: 500; opacity: 0.75; }
-      .starred-pick { display: inline-flex; gap: 0; padding: 2px;
-                       background: rgba(255,255,255,0.06);
-                       border: 1px solid rgba(229,165,16,0.35);
-                       border-radius: 8px; }
-      .s-pick-btn { background: transparent; border: 0; padding: 6px 12px;
-                    font-size: 13px; font-weight: 600; color: var(--muted);
-                    cursor: pointer; border-radius: 6px; font-family: inherit; }
-      .s-pick-btn:hover { background: rgba(229,165,16,0.10); color: var(--text); }
-      .s-pick-btn.active { background: #E5A510; color: #1a1a1a; }
+      .s-star { color: var(--star-mark); font-size: 22px; }
+      .starred-count { font-size: 13px; font-weight: 500; color: var(--muted); }
       .starred-pane { padding: 0; }
       .starred-loading, .starred-err {
         text-align: center; padding: 40px 20px; color: var(--muted);
@@ -5885,87 +5739,7 @@ class KatjaScheduleCard extends HTMLElement {
       .starred-empty { text-align: center; padding: 50px 20px; color: var(--muted); }
       .s-empty-star { font-size: 56px; opacity: 0.3; line-height: 1; }
       .s-empty-title { font-size: 17px; font-weight: 600; margin-top: 12px; color: var(--text); }
-      .s-empty-hint { font-size: 13px; opacity: 0.7; margin-top: 6px; }
-      .s-empty-line { font-style: italic; opacity: 0.5; padding: 4px 0; font-size: 13px; }
-
-      /* Layout A — vertical agenda */
-      .s-month { margin-bottom: 18px; max-width: 760px; }
-      .s-month h3 { font-size: 12px; letter-spacing: 1.5px;
-                    text-transform: uppercase; color: #E5A510;
-                    margin: 0 0 8px; padding-bottom: 4px;
-                    border-bottom: 1px solid rgba(229,165,16,0.25); }
-      .s-month-empty .s-empty-line { padding: 6px 0 12px; }
-      .s-item { display: grid; grid-template-columns: 76px 1fr auto;
-                 align-items: baseline; gap: 14px; padding: 10px 8px;
-                 border-bottom: 1px solid var(--border); }
-      .s-item-date { font-size: 14px; font-weight: 600; color: var(--muted);
-                     font-variant-numeric: tabular-nums; }
-      .s-item-what { font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.3; }
-      .s-item-where { font-size: 13px; color: var(--muted); margin-top: 2px; }
-      .s-item-time { font-size: 13px; color: var(--muted); white-space: nowrap; }
-
-      /* Layout B — mini-grid + agenda split */
-      .starred-split { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-                        gap: 18px; }
-      .s-grid-wrap { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-      .s-mini-month { background: rgba(255,255,255,0.04);
-                       border: 1px solid var(--border);
-                       border-radius: 8px; padding: 10px 8px; }
-      .s-mini-month h4 { font-size: 12px; margin: 0 0 6px;
-                          letter-spacing: 1px; text-transform: uppercase;
-                          text-align: center; color: var(--muted); }
-      .g-dow { display: grid; grid-template-columns: repeat(7, 1fr);
-               font-size: 9.5px; color: var(--muted); text-align: center;
-               margin-bottom: 2px; }
-      .g-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
-      .g-cell { aspect-ratio: 1 / 1; display: flex; align-items: center;
-                justify-content: center; font-size: 11px; color: var(--muted);
-                border-radius: 3px; }
-      .g-cell.empty { visibility: hidden; }
-      .g-cell.starred { background: rgba(229,165,16,0.20); color: #E5A510;
-                         font-weight: 700; font-size: 12px; }
-      .g-cell.today { outline: 1.5px solid var(--accent); outline-offset: -1px;
-                       color: var(--accent-ink); font-weight: 700; }
-      .starred-split-up { background: rgba(255,255,255,0.03);
-                           border: 1px solid var(--border); border-radius: 8px;
-                           padding: 10px 12px; }
-      .starred-split-up h3 { font-size: 12px; letter-spacing: 1px;
-                              text-transform: uppercase; color: var(--muted);
-                              margin: 0 0 6px; }
-      .s-up-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
-      .s-up-row:last-child { border-bottom: 0; }
-      .s-up-date { font-size: 12px; font-weight: 600; color: var(--muted); }
-      .s-up-what { font-size: 14.5px; font-weight: 600; color: var(--text); margin-top: 2px; }
-      .s-up-time { font-size: 12px; color: var(--muted); margin-top: 1px; }
-
-      /* Layout C — timeline ribbon */
-      .starred-timeline { padding: 0 8px; }
-      .tl-axis { position: relative; height: 110px; margin: 16px 8px 8px; }
-      .tl-axis-line { position: absolute; left: 0; right: 0; top: 50%;
-                       height: 2px; background: rgba(229,165,16,0.35);
-                       transform: translateY(-1px); }
-      .tl-tick { position: absolute; top: 0; height: 100%;
-                  transform: translateX(-50%); pointer-events: none; }
-      .tl-tick-line { position: absolute; left: 50%; top: 38%; bottom: 38%;
-                       width: 1px; background: rgba(255,255,255,0.2); }
-      .tl-tick-label { position: absolute; bottom: 2px; left: 50%;
-                        transform: translateX(-50%); font-size: 11px;
-                        color: var(--muted); white-space: nowrap; }
-      .tl-mark { position: absolute; top: 50%;
-                  transform: translate(-50%, -50%);
-                  background: rgba(229,165,16,0.15);
-                  border: 2px solid #E5A510; border-radius: 50%;
-                  width: 26px; height: 26px; display: flex;
-                  align-items: center; justify-content: center;
-                  pointer-events: auto; }
-      .tl-mark-star { color: #E5A510; font-size: 13px; line-height: 1; }
-      .tl-list { margin-top: 18px; }
-      .tl-row { display: grid; grid-template-columns: 130px 1fr auto;
-                 gap: 12px; padding: 8px 0;
-                 border-bottom: 1px solid var(--border); }
-      .tl-row-date { font-size: 13px; font-weight: 600; color: var(--muted); }
-      .tl-row-what { font-size: 14.5px; color: var(--text); font-weight: 600; }
-      .tl-row-time { font-size: 13px; color: var(--muted); }
+      .s-empty-hint { font-size: 13px; margin-top: 6px; }
 
       /* ============================================================
          D Flow — port of templates/schedule.html:395-577. A 26-week
@@ -5973,7 +5747,7 @@ class KatjaScheduleCard extends HTMLElement {
          that span across day cells (with continuation arrows at
          week boundaries). fr-2026-05-19 HA-parity sweep, gap 12.
          ============================================================ */
-      /* The D/E grid spans a full 6 months (26 weeks). At natural
+      /* The grid spans a full 6 months (26 weeks). At natural
          height that's a ~1500px wall of calendar — so cap the grid
          at roughly 3 months and let it scroll internally for the
          rest. The .starred-layout-d element is the scroll container,
@@ -6014,9 +5788,11 @@ class KatjaScheduleCard extends HTMLElement {
         background: var(--card-bg, var(--ha-card-background, #1a1a1a));
         z-index: 5;
       }
+      /* The day names, the weekend's and the "wk" over the week numbers
+         included, are the theme's grey at full strength: at 0.85 and 0.7
+         they read 4.0 and 3.0:1 on Nordic (until 0.91.0). */
       .flow-dow span { padding: 4px 0 4px 6px; }
-      .flow-dow span.is-weekend { opacity: 0.85; }
-      .flow-dow .flow-dow-gutter { opacity: 0.7; font-size: 9.5px; padding-left: 4px; }
+      .flow-dow .flow-dow-gutter { font-size: 9.5px; padding-left: 4px; }
       .flow-week {
         position: relative;
         display: grid;
@@ -6054,12 +5830,18 @@ class KatjaScheduleCard extends HTMLElement {
       .flow-day-num .flow-day-d {
         font-size: 14px; font-weight: 800; color: var(--text-strong);
       }
-      .flow-day-num.is-past { opacity: 0.55; }
+      /* A day before today is told by its grey number, not by fading
+         the day: at 0.55 its number read 2.9:1 on Kraft and its month
+         2.3:1 on Paper (until 0.91.0). */
+      .flow-day-num.is-past .flow-day-d { color: var(--muted); }
       .flow-day-num.is-today {
         background: rgba(229,165,16,0.35);
         box-shadow: inset 3px 0 0 #B07A00;
       }
-      .flow-day-num.is-today .flow-day-d { color: var(--text-strong); }
+      /* Today's month beside its number, as on the web: the theme's grey
+         read 3.0:1 on today's amber (Terminal, until 0.91.0). */
+      .flow-day-num.is-today .flow-day-d,
+      .flow-day-num.is-today .flow-month-tag { color: var(--text-strong); }
       .flow-day-num .flow-month-pill {
         color: var(--text-strong); font-weight: 800; font-size: 10.5px;
         text-transform: uppercase; letter-spacing: 0.5px;
@@ -6098,85 +5880,19 @@ class KatjaScheduleCard extends HTMLElement {
         border-top-right-radius: 0; border-bottom-right-radius: 0;
         border-right-width: 0;
       }
+      /* The ‹ › a bar continues by: a symbol in its edge's hue made to
+         read at 3:1 on the bar (--cm, _flowColors); at 0.55 of the edge
+         it read 1.4:1 (until 0.91.0). */
       .flow-event .flow-arrow {
-        flex: 0 0 auto; font-size: 12px; opacity: 0.55;
-        color: var(--ce, #5A4A20);
+        flex: 0 0 auto; font-size: 12px;
+        color: var(--cm);
       }
       .flow-event-title {
         overflow: hidden; text-overflow: ellipsis;
         flex: 1 1 auto; min-width: 0;
       }
-      .flow-day-bg { display: none; }
-
-      /* E M3 — Material 3 Expressive variant of the same grid. The
-         JS DOM is identical; this restyling switches in the
-         "chocolate-bar" per-day rounded cards + Google-Sans-flavored
-         typography. */
-      .starred-layout-d.is-m3 .flow-day-bg {
-        display: block;
-        background: rgba(103,80,164,0.10);
-        border-radius: 12px;
-        margin: 2px 3px 4px;
-        z-index: 0;
-      }
-      .starred-layout-d.is-m3 .flow-day-bg.is-past { background: rgba(103,80,164,0.04); }
-      .starred-layout-d.is-m3 .flow-day-bg.is-today {
-        background: rgba(234,221,255,0.85);
-        box-shadow: 0 0 0 2px #6750A4;
-      }
-      .starred-layout-d.is-m3 .flow-week {
-        border-bottom: 1px solid rgba(202,196,208,0.3);
-        background: transparent;
-        min-height: 56px;
-      }
-      .starred-layout-d.is-m3 .flow-week.is-alt { background: transparent; }
-      .starred-layout-d.is-m3 .flow-week-rules span { border: 0 !important; }
-      .starred-layout-d.is-m3 .flow-week-num {
-        color: #B58CFF; font-weight: 700;
-      }
-      .starred-layout-d.is-m3 .flow-day-num {
-        background: transparent; position: relative; z-index: 2;
-        padding: 6px 10px 4px;
-      }
-      .starred-layout-d.is-m3 .flow-day-num.is-today { background: transparent; box-shadow: none; }
-      .starred-layout-d.is-m3 .flow-day-num .flow-month-pill {
-        background: #6750A4; color: #FFFFFF;
-        font-weight: 600; letter-spacing: 0.3px;
-        padding: 1px 7px; border-radius: 999px; font-size: 9.5px;
-      }
-      .starred-layout-d.is-m3 .flow-event {
-        height: 22px; line-height: 22px;
-        margin: 2px 5px;
-        padding: 0 12px;
-        border: none;
-        border-radius: 16px;
-        color: var(--ce);
-        background: var(--c);
-        font-weight: 600; font-size: 12px;
-        letter-spacing: 0.1px;
-        position: relative; z-index: 1;
-      }
-      .starred-layout-d.is-m3 .flow-event.is-continuation {
-        border-top-left-radius: 4px; border-bottom-left-radius: 4px;
-        margin-left: 0;
-      }
-      .starred-layout-d.is-m3 .flow-event.is-continued {
-        border-top-right-radius: 4px; border-bottom-right-radius: 4px;
-        margin-right: 0;
-      }
-      .starred-layout-d.is-m3 .flow-sticky-head .flow-jump-today {
-        background: rgba(234,221,255,0.85); color: #21005D; border: none;
-      }
-      .starred-layout-d.is-m3 .flow-sticky-head .flow-jump-today:hover {
-        background: #D6BBFF;
-      }
 
       @media (max-width: 720px) {
-        .starred-split { grid-template-columns: 1fr; }
-        .s-grid-wrap { grid-template-columns: repeat(2, 1fr); }
-        .tl-axis { height: 80px; }
-        .tl-row { grid-template-columns: 100px 1fr; }
-        .tl-row-time { grid-column: 2; }
         .starred-layout-d { padding: 0 2px 24px; }
         .flow-dow, .flow-week, .flow-week-rules {
           grid-template-columns: 20px repeat(7, minmax(0, 1fr));
@@ -6360,8 +6076,8 @@ class KatjaScheduleCardEditor extends HTMLElement {
         .cal-item select { font-size: 12px; padding: 6px; }
         .remove-btn { background: #8B2E2E; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; padding: 4px 8px; }
         .remove-btn:hover { background: #B03018; }
-        .add-btn { background: #2E8B57; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; padding: 8px 16px; font-weight: 600; }
-        .add-btn:hover { background: #1F6B41; }
+        .add-btn { background: #04855D; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; padding: 8px 16px; font-weight: 600; }
+        .add-btn:hover { background: #047857; }
         h3 { font-size: 14px; color: #aaa; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #333; }
       </style>
 
