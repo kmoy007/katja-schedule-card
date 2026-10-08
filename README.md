@@ -71,7 +71,7 @@ theme: none
 show_theme_toggle: false
 rows: 6                 # rows the card shows, all-day ones included (default 6)
 row_height: 42          # px per row (default 42, at least 24)
-evening_switch: '21:00' # Pacific; when it may switch to tomorrow (default '21:00'). Quote it: YAML reads 21:00 as a number
+evening_switch: '21:00' # Pacific; when the evening view starts (default '21:00'). Quote it: YAML reads 21:00 as a number
 calendars:
   - entity: calendar.schedule
 tap_action:             # optional; any Home Assistant action
@@ -87,8 +87,8 @@ tap_action:             # optional; any Home Assistant action
 - Events that have ended are greyed. When the card draws, the list is scrolled so the first event that hasn't ended is at the top; the ended ones are a scroll up.
 - Someone using it isn't interrupted: for 90 s after a touch or a mouse wheel on the card (the same 90 s the panels wait before going back to their home screen), a redraw (the minute tick, the 5-minute refresh) leaves the list where it is. After that, the next redraw scrolls it past the ended events again. When Home Assistant brings the card back after a dashboard view switch, the list is scrolled past the ended events again.
 - When rows are below the visible ones, an amber `⌄ N more` button sits under the list. A tap scrolls three rows down. It counts down as you scroll and hides at the bottom (its space stays, so the dashboard doesn't jump).
-- From `evening_switch` on, once no timed event today is still running, it shows **tomorrow**: an amber bar with a big **Tomorrow** and the date, and tomorrow's events (or "Nothing on the calendar tomorrow"). This is checked every minute.
-- A tap on the header or a row (not on `N more`, and not a scroll) runs `tap_action` through Home Assistant, so the dashboard can open a popup with the full day. With no `tap_action`, a row opens that event's details and the header does nothing; `tap_action: {action: none}` makes every tap do nothing.
+- From `evening_switch` on it is the **evening view** (Ken, 2026-10-07: tomorrow on its own, under a Tomorrow header, wasn't read as tomorrow until you read the header). The header still says `TODAY · FRI 2 OCT`. Under it, what is left of today: a green `✓ Nothing more today`, or the timed events still to come or still running (two at most: with three or more, the next one and `+ 2 more today`). Today's all-day events are left out by then. Then an amber `TOMORROW SAT 3 OCT` bar, a row high, and tomorrow's events (or "Nothing on the calendar tomorrow") in the rows that are left: four of six when nothing is left today. The card stays the same height, so nothing under it moves at the switch. It switches even with something still to come today (that is what today's part is for), and goes back to today at midnight. This is checked every minute. On a card of fewer than four rows today's part is one row; it needs three (today, the bar, one of tomorrow's).
+- A tap on the header, a row or the Tomorrow bar (not on `N more`, and not a scroll) runs `tap_action` through Home Assistant, so the dashboard can open a popup with the full day. With no `tap_action`, a row opens that event's details and the header does nothing; `tap_action: {action: none}` makes every tap do nothing.
 - It has its own dark palette (card `#1d2a2f`, amber `#ffd38a`) whatever the `theme`: it is made to sit on a dark dashboard, and the amber is only readable on dark. The font follows the theme.
 - If no calendar loaded (the calendar API failed, or the entity is unavailable), the first row is a muted "⚠ Couldn't load the calendar" instead of "Nothing on the calendar today", so a broken calendar never looks like a quiet day. Whatever did come back is shown under it. If some calendars loaded, it shows what loaded. Before the first load it says "Loading the calendar…".
 - A bad `rows`, `row_height` or `evening_switch` is shown as a configuration error on the card.

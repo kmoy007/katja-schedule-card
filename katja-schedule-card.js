@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.91.0";
+const CARD_VERSION = "0.92.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3572,9 +3572,12 @@ class KatjaScheduleCard extends HTMLElement {
   // Master Bedroom, 600 px wide; Ken, 2026-10-02): a one-line header,
   // all-day events pinned, then one fixed-height line per timed event in
   // a list that shows `rows` lines and scrolls. Events that have ended
-  // are greyed and scrolled past. After `evening_switch` (Pacific), once
-  // nothing timed is left today, it shows tomorrow instead. A tap runs
-  // the card's `tap_action` (the panels open a popup with the full day).
+  // are greyed and scrolled past. From `evening_switch` (Pacific) on it
+  // is the evening view: what is left of today, then an amber Tomorrow
+  // bar and tomorrow's events (Ken, 2026-10-07: tomorrow alone, under a
+  // Tomorrow header, wasn't read as tomorrow until you read the header).
+  // A tap runs the card's `tap_action` (the panels open a popup with the
+  // full day).
 
   /** "YYYY-MM-DD HH:MM" of an ISO instant as a Pacific wall clock reads
    *  it. Sorts as a string, so it compares with the stamp of now. */
@@ -3589,10 +3592,12 @@ class KatjaScheduleCard extends HTMLElement {
     return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
   }
 
-  /** What the preview shows right now: which day, its all-day events,
-   *  its timed events each marked ended or not, and the index of the
-   *  first timed event that hasn't ended (the list is scrolled to it;
-   *  the length of the list when every one has). */
+  /** What the preview shows right now: which day the list is (today, or
+   *  tomorrow in the evening), its all-day events, its timed events each
+   *  marked ended or not, and the index of the first timed event that
+   *  hasn't ended (the list is scrolled to it; the length of the list
+   *  when every one has). In the evening also `todayDs` and `todayLeft`,
+   *  today's timed events that haven't ended. */
   _previewModel(grouped) {
     const now = this._pacificNow();
     const pad = (n) => String(n).padStart(2, "0");
@@ -3613,28 +3618,51 @@ class KatjaScheduleCard extends HTMLElement {
     };
     const today = build(this._fmt(now));
     const nowMin = now.getHours() * 60 + now.getMinutes();
-    if (nowMin >= this._previewEveningMin && !today.timed.some(r => !r.ended)) {
-      return { mode: "tomorrow", ...build(this._tomorrowStr()) };
+    if (nowMin >= this._previewEveningMin) {
+      // Today's all-day events have been on the card all day; the evening
+      // has no room for them (one carrying on into tomorrow is there).
+      return { mode: "evening", ...build(this._tomorrowStr()), todayDs: today.ds,
+               todayLeft: today.timed.filter(r => !r.ended).map(r => r.ev) };
     }
     return { mode: "today", ...today };
   }
 
   /** Which rows are pinned and which scroll, so the card shows `rows`
    *  rows in all however many all-day events there are (Ken, 2026-10-02).
-   *  Pinned, in order: a warning when the calendar didn't load, then the
+   *  Pinned, in order: a warning when the calendar didn't load; in the
+   *  evening, today's part and the Tomorrow bar; then the list day's
    *  all-day events — at most enough of them to leave the timed list one
    *  visible row. All-day events past that open the scrolling list, above
    *  the timed ones, so they are a scroll up rather than gone. `scrollTo`
    *  is the list row to put on top: the first timed event that hasn't
-   *  ended (the top of the list when there are no timed events). */
+   *  ended (the top of the list when there are no timed events).
+   *
+   *  Today's part (`today`, evening only) is at most two rows (Ken,
+   *  2026-10-07): the events left, or the next one and "+N more today"
+   *  when three or more are left, or "Nothing more today". On a card of
+   *  fewer than four rows it is one, so tomorrow keeps a row. The bar is
+   *  a row of its own. Before the first load, or when the load failed
+   *  with nothing to show, there is neither: the one row that says so is
+   *  all there is, never a "Nothing more today". */
   _previewLayout(m) {
     const warn = this._fetchFailed ? 1 : 0;
-    const room = Math.max(1, this._previewRows - warn);
+    let room = Math.max(1, this._previewRows - warn);
     const A = m.allDay.length, T = m.timed.length;
+    let today = null;
+    if (m.mode === "evening" && this._fetchedOnce
+        && !(warn && !m.todayLeft.length && !A && !T)) {
+      const left = m.todayLeft, cap = room >= 4 ? 2 : 1, more = left.length > cap;
+      today = { events: more ? left.slice(0, cap - 1) : left,
+                more: more ? left.length - (cap - 1) : 0,
+                nothing: !left.length && !warn };
+      const used = today.events.length + (more || today.nothing ? 1 : 0);
+      room = Math.max(1, room - used - 1);
+    }
     const pinAllDay = T === 0 && A <= room ? A : Math.max(0, Math.min(A, room - 1));
     const overflow = m.allDay.slice(pinAllDay).map(ev => ({ ev, ended: false }));
     return {
       warn: !!warn,
+      today,
       pinned: m.allDay.slice(0, pinAllDay),
       list: overflow.concat(m.timed),
       visible: Math.max(1, room - pinAllDay),
@@ -3675,24 +3703,30 @@ class KatjaScheduleCard extends HTMLElement {
     const tap = this._previewTapAction();
     // Only something a tap will open is drawn as a button with a "›".
     const go = !!tap && tap.action !== "none";
-    const d = new Date(m.ds + "T12:00:00");
-    const date = `${d.getDate()} ${MONTH_NAMES[d.getMonth()]}`;
+    const day = (ds) => {
+      const d = new Date(ds + "T12:00:00");
+      return `${DAY_NAMES[d.getDay()].slice(0, 3)} ${d.getDate()} ${MONTH_NAMES[d.getMonth()]}`;
+    };
     const headTag = go ? "button" : "div";
-    const head = m.mode === "tomorrow"
-      ? `<${headTag} class="pv-head pv-tmr" data-pv-tap><span class="pv-day"><b>Tomorrow</b> ${DAY_NAMES[d.getDay()]} ${date}</span>`
-        + `${go ? '<span class="pv-go">Today &amp; tomorrow ›</span>' : ""}</${headTag}>`
-      : `<${headTag} class="pv-head" data-pv-tap><span class="pv-day">Today · ${DAY_NAMES[d.getDay()].slice(0, 3)} ${date}</span>`
-        + `${go ? '<span class="pv-go">+ tomorrow ›</span>' : ""}</${headTag}>`;
+    // The header always names today; in the evening tomorrow is the bar.
+    const head = `<${headTag} class="pv-head" data-pv-tap><span class="pv-day">Today · ${day(m.todayDs || m.ds)}</span>`
+      + `${go ? '<span class="pv-go">+ tomorrow ›</span>' : ""}</${headTag}>`;
     const rh = this._previewRowHeight;
     // A row that says something about the calendar rather than an event.
     const note = (cls, glyph, text) => `<${headTag} class="pv-row ${cls}" data-pv-tap>`
       + `<span class="pv-t">${glyph}</span><span class="pv-n">${text}</span></${headTag}>`;
     // A calendar that didn't load must never read as a quiet day.
     let body = L.warn ? note("pv-warn", "⚠", "Couldn't load the calendar") : "";
+    if (L.today) {
+      body += L.today.events.map(ev => this._previewRow(ev, false)).join("");
+      if (L.today.more) body += note("pv-note", "", `+ ${L.today.more} more today`);
+      if (L.today.nothing) body += note("pv-empty pv-done", "✓", "Nothing more today");
+      body += `<${headTag} class="pv-sec" data-pv-tap><b>Tomorrow</b><span>${day(m.ds)}</span></${headTag}>`;
+    }
     if (!L.pinned.length && !L.list.length) {
       if (!L.warn) {
         body += this._fetchedOnce
-          ? note("pv-empty", "", `Nothing on the calendar ${m.mode}`)
+          ? note("pv-empty", "", `Nothing on the calendar ${m.mode === "evening" ? "tomorrow" : "today"}`)
           : note("pv-empty", "", "Loading the calendar…");
       }
     } else {
@@ -5917,30 +5951,29 @@ class KatjaScheduleCard extends HTMLElement {
       ha-card.pv-host {
         --pv-bg: #1d2a2f; --pv-line: rgba(255,255,255,0.08);
         --pv-text: #f2f6f7; --pv-muted: rgba(242,246,247,0.72);
-        --pv-amber: #ffd38a; --pv-amber-ink: #1b1407;
+        --pv-amber: #ffd38a; --pv-amber-ink: #1b1407; --pv-done: #7fd6a4;
         display: block; background: var(--pv-bg); border: none; overflow: hidden;
         border-radius: var(--ha-card-border-radius, 18px);
         box-shadow: var(--ha-card-box-shadow, none);
       }
       .card.card-preview { background: transparent; border-radius: 0; box-shadow: none; }
       .pv { padding: 6px 0 8px; color: var(--pv-text); font-family: var(--font); }
-      .pv-head, .pv-row, .pv-more { all: unset; box-sizing: border-box; font-family: var(--font); }
-      button.pv-head, button.pv-row, .pv-more { cursor: pointer; }
-      .pv-head:focus-visible, .pv-row:focus-visible, .pv-more:focus-visible {
+      .pv-head, .pv-row, .pv-sec, .pv-more { all: unset; box-sizing: border-box; font-family: var(--font); }
+      button.pv-head, button.pv-row, button.pv-sec, .pv-more { cursor: pointer; }
+      .pv-head:focus-visible, .pv-row:focus-visible, .pv-sec:focus-visible, .pv-more:focus-visible {
         outline: 2px solid var(--pv-amber); outline-offset: -2px; }
       .pv-head { display: flex; width: 100%; justify-content: space-between; align-items: baseline; gap: 12px;
         padding: 6px 16px; font-size: 13px; letter-spacing: 0.07em;
         text-transform: uppercase; font-weight: 700; color: var(--pv-muted); }
       .pv-go { color: var(--pv-amber); text-transform: none; letter-spacing: 0;
         font-size: 15px; font-weight: 600; white-space: nowrap; }
-      /* After the evening switch the card shows tomorrow: an amber bar
-         with a big Tomorrow, so nobody reads it as today. */
-      .pv-head.pv-tmr { margin: -6px 0 4px; padding: 12px 16px; align-items: center;
-        background: rgba(255,211,138,0.16); border-bottom: 1px solid rgba(255,211,138,0.35);
-        text-transform: none; letter-spacing: 0; font-size: 16px; font-weight: 500;
-        color: var(--pv-text); }
-      .pv-head.pv-tmr b { font-size: 24px; font-weight: 700; color: var(--pv-amber);
-        letter-spacing: 0.02em; margin-right: 8px; }
+      /* In the evening tomorrow starts under an amber bar, a row of its
+         own below what is left of today (2026-10-07). */
+      .pv-sec { display: flex; width: 100%; height: var(--pv-row); align-items: center; gap: 10px;
+        padding: 0 16px; background: rgba(255,211,138,0.16); border-top: 1px solid rgba(255,211,138,0.35);
+        font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; font-weight: 700;
+        color: var(--pv-amber); }
+      .pv-sec span { color: var(--pv-text); letter-spacing: 0.04em; font-weight: 600; }
       .pv-row { display: grid; width: 100%; height: var(--pv-row); grid-template-columns: 80px minmax(0, 1fr);
         gap: 12px; align-items: center; padding: 0 16px;
         border-top: 1px solid var(--pv-line); font-size: 17px; color: var(--pv-text); }
@@ -5952,8 +5985,9 @@ class KatjaScheduleCard extends HTMLElement {
         margin: 0 8px 2px 0; vertical-align: middle; }
       .pv-row.is-drive .pv-n { font-style: italic; color: var(--pv-muted); }
       .pv-row.is-struck .pv-n { text-decoration: line-through; opacity: 0.7; }
-      .pv-row.pv-empty .pv-n, .pv-row.pv-warn .pv-n { font-style: italic; color: var(--pv-muted); }
+      .pv-row.pv-empty .pv-n, .pv-row.pv-note .pv-n, .pv-row.pv-warn .pv-n { font-style: italic; color: var(--pv-muted); }
       .pv-row.pv-warn .pv-t { color: var(--pv-amber); }
+      .pv-row.pv-done .pv-t { color: var(--pv-done); font-size: 18px; }
       .pv-list { overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
       .pv-list::-webkit-scrollbar { display: none; }
       /* The "N more" button sits under the list, never over a row. Its
