@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.92.0";
+const CARD_VERSION = "0.93.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2993,6 +2993,11 @@ class KatjaScheduleCard extends HTMLElement {
           else if (ci.status === "changed") changedIds.push(ci.event_id || "");
         }
         for (const p of (g.proposals || [])) {
+          // Two copies of one event are merged, or called not the same, on
+          // their own row, never in bulk (docs/duplicate-merge.md; the server
+          // refuses a merge in a batch too): a Reject all would say "not the
+          // same" for pairs nobody looked at.
+          if (p.kind === "merge_rows") continue;
           proposalIds.push(p.id);
           // Mail a stranger sent to the inbox is applied on its own row,
           // beside its warning, never by Apply all (2026-10-04; the server
@@ -3128,8 +3133,10 @@ class KatjaScheduleCard extends HTMLElement {
     const proposalHtml = proposals.map(p => {
       const pDis = (allDisabled || pending.has(p.id)) ? " disabled" : "";
       const summary = p.summary || (`${p.kind} ${JSON.stringify(p.args || {}).slice(0,80)}`);
+      // The refresh's duplicate check, not the assistant (docs/duplicate-merge.md).
+      const dup = p.kind === "merge_rows";
       return `<div class="review-item review-item-proposal">
-        <div class="review-item-tag review-tag-agent">AGENT</div>
+        <div class="review-item-tag review-tag-agent">${dup ? "DUPLICATE" : "AGENT"}</div>
         <div class="review-item-main">
           <div class="review-item-line">${_esc(summary)}</div>
           ${p.source ? `<div class="review-item-meta review-item-source${p.unverified === true ? " unverified" : ""}">${_esc(p.source)}</div>` : ""}
@@ -3137,8 +3144,8 @@ class KatjaScheduleCard extends HTMLElement {
           ${p.added_at ? `<div class="review-item-meta">queued ${_esc(this._pacificTime(p.added_at))}</div>` : ""}
         </div>
         <div class="review-actions">
-          <button class="review-btn accept" data-review-action="applyProposal" data-pe-id="${_esc(p.id)}"${pDis}>Apply</button>
-          <button class="review-btn reject" data-review-action="rejectProposal" data-pe-id="${_esc(p.id)}"${pDis}>Reject</button>
+          <button class="review-btn accept" data-review-action="applyProposal" data-pe-id="${_esc(p.id)}"${pDis}>${dup ? "Merge" : "Apply"}</button>
+          <button class="review-btn reject" data-review-action="rejectProposal" data-pe-id="${_esc(p.id)}"${pDis}>${dup ? "Not the same" : "Reject"}</button>
         </div>
       </div>`;
     }).join("");
