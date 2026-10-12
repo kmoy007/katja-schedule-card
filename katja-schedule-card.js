@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.93.0";
+const CARD_VERSION = "0.94.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -3890,7 +3890,13 @@ class KatjaScheduleCard extends HTMLElement {
         const to24 = (p) => (p.ampm === "PM" && p.h !== 12 ? p.h + 12
                               : p.ampm === "AM" && p.h === 12 ? 0 : p.h);
         let startMin = to24(s) * 60 + s.m;
-        let endMin = to24(e) * 60 + e.m;
+        // An end on a later day (an overnight event, "10:00 PM–1:00 AM",
+        // or one that runs to midnight) runs to the bottom of this day's
+        // grid, as the web's and the phone's do. Read by its clock alone it
+        // came before the start, and the block was dropped (2026-10-12: the
+        // sync started keeping these events' end times).
+        let endMin = this._pacificStamp(ev.end.dateTime).slice(0, 10) > ds
+          ? 24 * 60 : to24(e) * 60 + e.m;
         startMin = Math.max(startMin, DV_DAY_START * 60);
         endMin = Math.min(endMin, (DV_DAY_END + 1) * 60);
         if (endMin <= startMin) return "";
