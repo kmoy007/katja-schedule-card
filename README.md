@@ -57,8 +57,29 @@ view: calendar
 calendars: ...
 ```
 
-Options: `today`, `tomorrow`, `calendar`, `schedule`, `overview`, `dayview`, `dayview-today`, `starred`, `preview` (default: full card with toggle).
+Options: `today`, `tomorrow`, `calendar`, `schedule`, `overview`, `dayview`, `dayview-today`, `starred`, `preview`, `family` (default: full card with toggle).
 Locked views hide the header and view toggle for a clean embedded look.
+
+### Family (a row per day, a column per person)
+
+`view: family` is the family month grid for the kitchen screen (needs the integration 0.45.0 or later):
+
+```yaml
+type: custom:katja-schedule-card
+view: family
+calendars:
+  - entity: calendar.katja_schedule
+sensors:
+  pending: sensor.katja_schedule_pending_review
+  sync: sensor.katja_schedule_last_sync
+```
+
+- Columns: Date, Ken, Katja, Sam, Caleb, House / School. Every day is a row (an empty one means nothing is on), today's highlighted, a heavier line above each Monday. A multi-day event is on every day it covers.
+- Under the date: "2 kids" (Sam and Caleb both have an evening commitment away from home), "Katja out" / "Ken out" (an evening out, or travelling). "Needed at home" in a parent's column when the other one travels that day.
+- Above the grid, a card for each week: Good, Hard or Blocked, and why ("Katja away Mon 19 – Wed 21, back by Thu 22").
+- It opens on this week and the next three, scrolled to today's row. **Month** shows a whole month, with ‹ Today › to move between months.
+- A tap on a day opens that day's full view; each event there opens its details.
+- The schedule app decides every column, flag and verdict; the card only draws them, and refreshes with every sync. Large type for reading across the room; `font_adjust: {family: 4}` makes it larger still.
 
 ### Preview (a small panel)
 
@@ -106,6 +127,7 @@ tap_action:             # optional; any Home Assistant action
 - Weekend day headers tinted warm
 - Sticky day headers while scrolling
 - Mon–Sun week grid in calendar view; tap a day for that day's full view, tap an event there for its details
+- Family view: a row per day and a column per person, with each week's verdict (see above)
 - Auto-refreshes every 5 minutes
 - A hide, accept, star, rule, pickup answer or chat message made on the card shows straight away. Update the integration to 0.31.1 or later with the card: an older integration answers before it has re-read the schedule, so the row comes back until its next poll
 

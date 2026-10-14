@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.101.0";
+const CARD_VERSION = "0.102.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -675,6 +675,15 @@ const LABELS = {
   accept: ["#4CAF50", null, "review queue"],
   decline: ["#FF6B6B", null, "review queue"],
   alert: ["#FF6B6B", null, "row"],
+  // The Family view's chips (fr-2026-09-28-b): a week's verdict, a day's
+  // "2 kids" and "Katja out" / "Ken out", a parent's "Needed at home". The
+  // server words them; the card only colours them, words first.
+  "fam-good": ["#2E8B57", "rgba(46,139,87,0.16)", "row"],
+  "fam-hard": ["#E0A020", "rgba(224,160,32,0.18)", "row"],
+  "fam-blocked": ["#FF3030", "rgba(255,48,48,0.14)", "row"],
+  "fam-kids": ["#D97706", "rgba(217,119,6,0.16)", "row"],
+  "fam-out": ["#C8401E", "rgba(200,64,30,0.14)", "row"],
+  "fam-home": ["#FF6B6B", "rgba(255,100,100,0.15)", "row"],
 };
 // Where a label sits, and the tints that place can lay under it (any one of
 // them, or none): on an event row (the card, today's tint, and in the
@@ -817,7 +826,7 @@ function readableOn(hue, grounds, floor = LABEL_FLOOR) {
 
 // Every value `view:` accepts. Each one locks the card to that view (no
 // view toggle); anything else gives the full card with the toggle.
-const LOCKED_VIEWS = ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today", "starred", "preview"];
+const LOCKED_VIEWS = ["today", "tomorrow", "calendar", "schedule", "overview", "dayview", "dayview-today", "starred", "preview", "family"];
 
 // How long the preview leaves its list where someone scrolled it before a
 // render may scroll it past the ended events again: the 90 s the wall
@@ -955,6 +964,23 @@ class KatjaScheduleCard extends HTMLElement {
     this._starredFetched = false;
     this._starredLoading = false;
     this._starredError = null;
+    // Family view (fr-2026-09-28-b): one row per day, one column per
+    // person. The server lays out every column, flag and week verdict
+    // (month_grid.py); the card asks for it through
+    // katja_schedule/family_month and only draws it. `_familyMode` is
+    // "weeks" (this week and the next three) or "month" (`_familyMonth`,
+    // "YYYY-MM"). `_family` is the last answer, for the query `_familyFor`
+    // names; `_familyTried` the last query asked, so a failed one isn't
+    // asked again on every render (the five-minute refresh asks again).
+    this._familyMode = "weeks";
+    this._familyMonth = null;
+    this._family = null;
+    this._familyFor = "";
+    this._familyTried = "";
+    this._familyLoading = "";
+    this._familyError = "";
+    this._familyFetched = false;
+    this._fetchedRange = null;
   }
 
   set hass(hass) {
@@ -1101,14 +1127,27 @@ class KatjaScheduleCard extends HTMLElement {
     return `${yyyy}-${mo}-${dd}T00:00:00${sign}${hh}:${mm}`;
   }
 
-  async _fetchEvents() {
+  async _fetchEvents(opts = {}) {
     if (!this._hass || !this._config.calendars) return;
     this._lastFetch = Date.now();
     const now = this._pacificNow();
+    let first = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let after = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 35);
+    // The Family view's days can start before today (its week, its month)
+    // and run past five weeks; a tap on one opens its day popup, which
+    // reads these events.
+    const fam = this._familyShown() ? this._family : null;
+    if (fam && fam.start && fam.end) {
+      const [ys, ms, ds] = fam.start.split("-").map(Number);
+      const [ye, me, de] = fam.end.split("-").map(Number);
+      const famFirst = new Date(ys, ms - 1, ds), famAfter = new Date(ye, me - 1, de + 1);
+      if (famFirst < first) first = famFirst;
+      if (famAfter > after) after = famAfter;
+    }
+    this._fetchedRange = [this._fmt(first), this._fmt(after)];
     // Pacific-anchored range — see _pacificISOAtMidnight.
-    const startISO = this._pacificISOAtMidnight(now.getFullYear(), now.getMonth(), now.getDate());
-    const endProbe = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 35);
-    const endISO = this._pacificISOAtMidnight(endProbe.getFullYear(), endProbe.getMonth(), endProbe.getDate());
+    const startISO = this._pacificISOAtMidnight(first.getFullYear(), first.getMonth(), first.getDate());
+    const endISO = this._pacificISOAtMidnight(after.getFullYear(), after.getMonth(), after.getDate());
     const all = [];
     // Calendars that loaded: the API answered and the entity isn't
     // unavailable (the integration's calendar answers [] before its
@@ -1212,7 +1251,160 @@ class KatjaScheduleCard extends HTMLElement {
     // Refresh starred events alongside if the Starred view has ever
     // been loaded — keeps the wall display current with web-side stars.
     if (this._starredFetched) this._fetchStarredEvents();
+    // And the Family grid, once its view has been shown, so the wall
+    // follows the schedule within one sync cycle.
+    if (this._familyFetched && opts.family !== false) this._fetchFamilyGrid();
     this._render();
+  }
+
+  // ====================== FAMILY VIEW ======================
+  // fr-2026-09-28-b. The server's grid (month_grid.py) through
+  // katja_schedule/family_month; nothing here decides a column, a flag or
+  // a verdict. A tap on a day opens that day's popup, as on the month grid.
+
+  _familyShown() { return this._view === "family"; }
+
+  _thisMonth() {
+    const n = this._pacificNow();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  /** What the view asks the server for: this week (from its Monday) and
+   *  the next three, or one month. */
+  _familyQuery() {
+    if (this._familyMode === "month") return { month: this._familyMonth || this._thisMonth() };
+    const now = this._pacificNow();
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+    return { start: this._fmt(monday), days: 28 };
+  }
+
+  async _fetchFamilyGrid() {
+    if (!this._hass) return;
+    const query = this._familyQuery();
+    const key = JSON.stringify(query);
+    this._familyFetched = true;
+    this._familyTried = key;
+    this._familyLoading = key;
+    try {
+      const r = await this._hass.callWS({ type: "katja_schedule/family_month", ...query });
+      if (key !== JSON.stringify(this._familyQuery())) return;   // moved on meanwhile
+      if (r && r.ok) {
+        this._family = r;
+        this._familyFor = key;
+        this._familyError = "";
+      } else {
+        this._familyError = (r && r.error) || "The schedule app sent no grid.";
+      }
+    } catch (e) {
+      if (key !== JSON.stringify(this._familyQuery())) return;
+      this._familyError = e?.code === "unknown_command"
+        ? "Update the Katja Schedule integration to 0.45.0 or later to see this view."
+        : `Couldn't load the family grid (${e?.message || e?.code || "error"}).`;
+    } finally {
+      if (this._familyLoading === key) this._familyLoading = "";
+    }
+    // Its days' popups read the calendar events: fetch the days it shows.
+    const g = this._familyFor === key ? this._family : null;
+    const have = this._fetchedRange;
+    if (g && (!have || g.start < have[0] || g.end >= have[1])) this._fetchEvents({ family: false });
+    this._render();
+  }
+
+  _familyNav(action) {
+    if (action === "weeks") {
+      this._familyMode = "weeks";
+    } else if (action === "month" || action === "today") {
+      this._familyMode = "month";
+      this._familyMonth = this._thisMonth();
+    } else if (action === "prev" || action === "next") {
+      const g = this._family;
+      const target = g && g.kind === "month" ? g[action] : null;
+      if (!target) return;
+      this._familyMode = "month";
+      this._familyMonth = target;
+    } else {
+      return;
+    }
+    this._familyError = "";
+    this._fetchFamilyGrid();
+    this._render();
+  }
+
+  _renderFamilyView() {
+    const key = JSON.stringify(this._familyQuery());
+    const g = this._familyFor === key ? this._family : null;
+    const month = this._familyMode === "month";
+    const btn = (action, label, on, aria = "") =>
+      `<button type="button" class="fam-btn${on ? " active" : ""}" data-fam="${action}"${aria ? ` aria-label="${aria}"` : ""}>${label}</button>`;
+    const nav = month ? `<div class="fam-nav">${btn("prev", "‹", false, "Previous month")}${btn("today", "Today", false)}${btn("next", "›", false, "Next month")}</div>` : "";
+    const bar = `<div class="fam-bar">
+        <span class="fam-title">${_esc(g ? g.title : "Family")}</span>
+        ${nav}
+        <div class="fam-modes" role="group" aria-label="Show">${btn("weeks", "4 weeks", !month)}${btn("month", "Month", month)}</div>
+      </div>`;
+    const note = this._familyError ? `<div class="fam-msg">${_esc(this._familyError)}</div>` : "";
+    if (!g) {
+      return `<div class="fam">${bar}${note || `<div class="fam-msg">Loading the family grid…</div>`}</div>`;
+    }
+    const weeks = (g.weeks || []).map(w => `<div class="fam-week${w.current ? " is-current" : ""}">
+        <div class="fam-week-head"><span class="fam-week-label">${_esc(w.label)}</span><span class="fam-verdict fam-v-${_esc(w.verdict)}">${_esc(w.verdict_label)}</span></div>
+        <div class="fam-why">${_esc(w.why)}</div>
+      </div>`).join("");
+    const cols = g.columns || [];
+    const head = `<tr><th class="fam-date fam-date-h" scope="col">Date</th>${cols.map(c => {
+      const famDot = PERSON_COLORS[c.key];
+      return `<th class="fam-col-h" scope="col">${famDot ? `<i class="fam-dot" style="background:${famDot}"></i>` : ""}${_esc(c.label)}</th>`;
+    }).join("")}</tr>`;
+    const needLabel = _esc(g.needed_at_home_label || "Needed at home");
+    const rows = (g.days || []).map((d, i) => {
+      const cls = ["fam-row", d.is_today ? "is-today" : "", d.weekend ? "is-weekend" : "",
+                   d.week_start ? "week-start" : ""].filter(Boolean).join(" ");
+      const flags = (d.flags || []).map(f =>
+        `<span class="fam-flag ${f.key === "two_kids" ? "fam-f-kids" : "fam-f-out"}">${_esc(f.label)}</span>`).join("");
+      const mon = i === 0 || d.day === 1 ? `<span class="fam-mon">${_esc(d.month)}</span>` : "";
+      const date = `<th class="fam-date" scope="row"><span class="fam-dow">${_esc(d.dow)}</span><span class="fam-dnum">${_esc(String(d.day))}</span>${mon}${flags ? `<div class="fam-flags">${flags}</div>` : ""}</th>`;
+      const cells = cols.map(c => {
+        const need = (d.needed_at_home || []).includes(c.key) ? `<div class="fam-need">${needLabel}</div>` : "";
+        const lines = (d.cells?.[c.key] || []).map(ln => `<div class="fam-ev${ln.drive ? " is-drive" : ""}">`
+          + `${ln.time ? `<span class="fam-t">${_esc(ln.time)}</span> ` : ""}<span class="fam-w">${_esc(ln.title)}</span>`
+          + `${ln.place ? `<span class="fam-p"> · ${_esc(ln.place)}</span>` : ""}</div>`).join("");
+        return `<td class="fam-cell">${need}${lines}</td>`;
+      }).join("");
+      return `<tr class="${cls}" data-day-date="${_esc(d.date)}">${date}${cells}</tr>`;
+    }).join("");
+    return `<div class="fam">${bar}${note}
+      <div class="fam-weeks">${weeks}</div>
+      <div class="fam-scroll" data-key="${_esc(key)}">
+        <table class="fam-grid"><thead>${head}</thead><tbody>${rows}</tbody></table>
+      </div>
+    </div>`;
+  }
+
+  /** After a render: the grid opens on today's row (under the sticky
+   *  header), or stays where it was for the same weeks. In Home Assistant
+   *  the grid has no size straight after a render (see _wirePreview), so it
+   *  is placed once it has one. */
+  _wireFamily(prev) {
+    this._famResize?.disconnect();
+    this._famResize = null;
+    this._famPrev = prev;
+    this.shadowRoot.querySelectorAll("[data-fam]").forEach(b =>
+      b.addEventListener("click", (e) => { e.stopPropagation(); this._familyNav(b.dataset.fam); }));
+    const scroller = this.shadowRoot.querySelector(".fam-scroll");
+    if (!scroller) return;
+    const place = () => {
+      if (!scroller.clientHeight || this._famPlaced === scroller) return;
+      this._famPlaced = scroller;
+      if (prev && prev.key === scroller.dataset.key) { scroller.scrollTop = prev.top; return; }
+      const row = scroller.querySelector(".fam-row.is-today");
+      if (!row) { scroller.scrollTop = 0; return; }
+      const head = scroller.querySelector("thead");
+      scroller.scrollTop = Math.max(0, row.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+        + scroller.scrollTop - (head ? head.getBoundingClientRect().height : 0));
+    };
+    place();
+    this._famResize = new ResizeObserver(place);
+    this._famResize.observe(scroller);
   }
 
   async _fetchPendingProposals() {
@@ -2939,6 +3131,11 @@ class KatjaScheduleCard extends HTMLElement {
       if (!this._starredFetched && !this._starredLoading) {
         this._fetchStarredEvents();
       }
+    } else if (this._view === "family") {
+      // Locked (`view: family`) or picked from the toggle.
+      body = this._renderFamilyView();
+      const key = JSON.stringify(this._familyQuery());
+      if (this._familyTried !== key && this._familyLoading !== key) this._fetchFamilyGrid();
     } else {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
     }
@@ -2961,6 +3158,8 @@ class KatjaScheduleCard extends HTMLElement {
       || locked === "schedule"
       || locked === "dayview"
       || locked === "dayview-today"
+      // The Family view on the wall: the review pill and the sync line.
+      || locked === "family"
     );
     // fr-2026-05-11-b (follow-up): hide the view-switcher pill on the
     // Overview view — Ken's wall display already treats Overview as
@@ -3043,13 +3242,18 @@ class KatjaScheduleCard extends HTMLElement {
     const pvPrev = !pvList ? null
       : this._pvPlaced === pvList ? { top: pvList.scrollTop, day: pvList.dataset.day }
       : this._pvPrev || null;
+    // The Family grid keeps where it was scrolled for the same weeks.
+    const famScroll = this.shadowRoot.querySelector(".fam-scroll");
+    const famPrev = !famScroll ? null
+      : this._famPlaced === famScroll ? { key: famScroll.dataset.key, top: famScroll.scrollTop }
+      : this._famPrev || null;
     this.shadowRoot.innerHTML = `
       <style>${this._getStyles()}</style>
       <ha-card${isPreview ? ' class="pv-host"' : ""}><div class="card${locked ? " card-locked" : ""}${isPreview ? " card-preview" : ""}${seamClasses}">
         ${showHeader ? `<div class="header${isOverviewHdr ? " header-overview" : ""}">
           ${titleHtml}
           ${showToggle ? `<div class="view-toggle">
-            ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"],["starred","★ Starred"]].map(([v,label]) =>
+            ${[["overview","Overview"],["dayview","Day View"],["schedule","Schedule"],["calendar","Calendar"],["starred","★ Starred"],["family","Family"]].map(([v,label]) =>
               `<button class="toggle-btn ${this._view===v?"active":""}" data-view="${v}">${label}</button>`
             ).join("")}
           </div>` : ""}
@@ -3126,6 +3330,7 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-event-idx]").forEach(el => el.addEventListener("click", () =>
       this._openEventAt(parseInt(el.dataset.eventIdx))));
     if (isPreview) this._wirePreview(pvPrev);
+    if (this._view === "family") this._wireFamily(famPrev);
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
       if (this._flowOpen) this._closeFlow();
       else if (this._reviewOpen) this._closeReview();
@@ -6395,6 +6600,65 @@ class KatjaScheduleCard extends HTMLElement {
       .pv-more[hidden] { visibility: hidden; }
       .pv-more svg { width: 34px; height: 34px; fill: var(--pv-amber-ink); }
 
+      /* Family view (fr-2026-09-28-b): one row per day, a column per
+         person, read from across the kitchen, so large type and words on
+         every chip. The colours are the theme's and LABELS'; a person's
+         colour is only the dot beside their name. */
+      .fam { padding: 10px 12px 14px; font-size: calc(18px + var(--katja-font-adjust)); }
+      .fam-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin: 2px 0 12px; }
+      .fam-title { margin-right: auto; font-family: var(--font-display); font-size: calc(28px + var(--katja-font-adjust));
+        font-weight: 800; color: var(--header-text); line-height: 1.1; }
+      .fam-modes, .fam-nav { display: flex; gap: 6px; }
+      .fam-btn { min-height: 48px; min-width: 52px; padding: 8px 18px; border: 1px solid var(--border);
+        border-radius: var(--radius-sm); background: transparent; color: var(--text); cursor: pointer;
+        font-family: var(--font); font-size: calc(18px + var(--katja-font-adjust)); font-weight: 700; }
+      .fam-btn.active { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
+      .fam-msg { padding: 18px 4px; color: var(--muted); font-size: calc(18px + var(--katja-font-adjust)); }
+      .fam-weeks { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 12px; }
+      .fam-week { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+      .fam-week.is-current { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+      .fam-week-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .fam-week-label { font-weight: 800; color: var(--header-text); font-size: calc(18px + var(--katja-font-adjust)); }
+      .fam-verdict { padding: 3px 12px; border-radius: var(--radius-pill); font-weight: 800;
+        font-size: calc(16px + var(--katja-font-adjust)); white-space: nowrap; }
+      .fam-v-good { color: var(--label-fam-good); background: var(--label-fam-good-fill); }
+      .fam-v-hard { color: var(--label-fam-hard); background: var(--label-fam-hard-fill); }
+      .fam-v-blocked { color: var(--label-fam-blocked); background: var(--label-fam-blocked-fill); }
+      .fam-why { margin-top: 6px; color: var(--text); font-size: calc(16px + var(--katja-font-adjust)); line-height: 1.35; }
+      .fam-scroll { overflow: auto; max-height: 72vh; border: 1px solid var(--border); border-radius: var(--radius-sm);
+        overscroll-behavior: contain; }
+      .fam-grid { width: 100%; min-width: 900px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+      .fam-grid thead th { position: sticky; top: 0; z-index: 2; padding: 10px 10px; text-align: left;
+        background: var(--card-bg); border-bottom: 2px solid var(--border); }
+      .fam-col-h { color: var(--header-text); font-size: calc(20px + var(--katja-font-adjust)); font-weight: 800; }
+      .fam-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+      .fam-grid .fam-date { position: sticky; left: 0; z-index: 1; width: 128px; background: var(--card-bg); }
+      .fam-grid thead .fam-date-h { z-index: 3; color: var(--header-text); font-size: calc(18px + var(--katja-font-adjust)); }
+      .fam-row > th, .fam-row > td { padding: 8px 10px; vertical-align: top; border-bottom: 1px solid var(--border); cursor: pointer; }
+      .fam-row > td { border-left: 1px solid var(--border); }
+      .fam-row.week-start > th, .fam-row.week-start > td { border-top: 3px solid var(--border); }
+      .fam-row.is-weekend > th, .fam-row.is-weekend > td { background-image: linear-gradient(var(--weekend-bg), var(--weekend-bg)); }
+      .fam-row.is-today > th, .fam-row.is-today > td { background-image: linear-gradient(var(--today-bg), var(--today-bg)); }
+      .fam-row.is-today > th { box-shadow: inset 6px 0 0 var(--accent); }
+      .fam-row > th { text-align: left; font-weight: 400; }
+      .fam-dow { display: block; color: var(--text-soft); font-size: calc(15px + var(--katja-font-adjust)); font-weight: 700; text-transform: uppercase; }
+      .fam-dnum { color: var(--header-text); font-size: calc(30px + var(--katja-font-adjust)); font-weight: 800; line-height: 1.05; }
+      .fam-mon { margin-left: 6px; color: var(--text-soft); font-size: calc(15px + var(--katja-font-adjust)); font-weight: 700; }
+      .fam-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+      .fam-flag { padding: 2px 8px; border-radius: var(--radius-pill); font-size: calc(14px + var(--katja-font-adjust));
+        font-weight: 800; white-space: nowrap; }
+      .fam-f-kids { color: var(--label-fam-kids); background: var(--label-fam-kids-fill); }
+      .fam-f-out { color: var(--label-fam-out); background: var(--label-fam-out-fill); }
+      .fam-need { display: inline-block; margin-bottom: 6px; padding: 3px 9px; border-radius: var(--radius-sm);
+        font-size: calc(15px + var(--katja-font-adjust)); font-weight: 800;
+        color: var(--label-fam-home); background: var(--label-fam-home-fill); }
+      .fam-ev { margin: 0 0 7px; line-height: 1.25; overflow-wrap: anywhere; }
+      .fam-t { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text-soft);
+        font-size: calc(15px + var(--katja-font-adjust)); font-weight: 600; }
+      .fam-w { color: var(--text-strong); font-size: calc(19px + var(--katja-font-adjust)); font-weight: 700; }
+      .fam-ev.is-drive .fam-w { font-weight: 500; font-style: italic; }
+      .fam-p { color: var(--text-soft); font-size: calc(16px + var(--katja-font-adjust)); }
+
       /* Per-theme escape hatch — appended last so it overrides any of the above.
          Lives at card scope only; per-panel customCss is not supported. */
       ${t.customCss || ""}
@@ -6537,6 +6801,7 @@ class KatjaScheduleCardEditor extends HTMLElement {
           <option value="schedule" ${c.view === "schedule" ? "selected" : ""}>Schedule (Cards) only</option>
           <option value="starred" ${c.view === "starred" ? "selected" : ""}>Starred only (6-month long-range)</option>
           <option value="preview" ${c.view === "preview" ? "selected" : ""}>Preview (compact today list for a small panel)</option>
+          <option value="family" ${c.view === "family" ? "selected" : ""}>Family only (a row per day, a column per person)</option>
         </select>
       </div>
 
