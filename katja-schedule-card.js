@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.94.0";
+const CARD_VERSION = "0.100.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -937,6 +937,9 @@ class KatjaScheduleCard extends HTMLElement {
     // /review/proposed/* route (server-side logic is unchanged so
     // both surfaces share the same outcome).
     this._reviewOpen = false;
+    this._flowOpen = false;
+    this._flowPayload = null;
+    this._flowError = "";
     this._reviewInbox = null;
     this._reviewLoading = false;
     this._reviewActionPending = new Set();
@@ -1164,6 +1167,20 @@ class KatjaScheduleCard extends HTMLElement {
             // metadata block instead, so the household read `Status:`,
             // `Source:` and a 200-character Google event id.
             _notes: meta.notes || "",
+            // "Was: Tue Oct 14, 3:00 PM" (integration 0.37.0+): a calendar
+            // move waiting at Review is drawn at its new date and time; this
+            // is what the schedule still holds (renderer.tentative_move).
+            _was: meta.was || "",
+            // "Cancelled: 1" (integration 0.37.0+): its calendar cancelled
+            // it, not just dropped it; struck through until acknowledged.
+            _cancelled: meta.cancelled === "1",
+            // "Choice: show|hide" (integration 0.40.0+): a person's own
+            // choice the rules don't override; the sheet offers "Let the
+            // rules decide".
+            _choice: meta.choice || "",
+            // "Version: …" (integration 0.41.0+): what an Accept on this
+            // calendar row is shown; the server refuses it if changed since.
+            _version: meta.version || "",
             _recurringEventId: meta.recurringeventid || "",
           });
         }
@@ -1335,7 +1352,7 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "pickup" || k === "live" || k === "notes" || k === "recurringeventid"
+          || k === "pickup" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
           || k === "title" || k === "drive") {
         out[k] = m[2].trim();
       }
@@ -1798,6 +1815,7 @@ class KatjaScheduleCard extends HTMLElement {
       [".hm-hide-contains", () => ["hide.contains", { settles: "hide.menu" }]],
       [".hm-back", () => ["hide.back", { settles: "hide.menu" }]],
       [".unhide-event-btn", () => ["sheet.unhide"]],
+      [".follow-rules-btn", () => ["sheet.follow_rules"]],
       [".modal-star", () => ["sheet.star"]],
       [".inline-apply", () => ["proposal.approve"]],
       [".inline-reject", () => ["proposal.reject"]],
@@ -1847,6 +1865,68 @@ class KatjaScheduleCard extends HTMLElement {
   _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
+
+  async _openFlow(eventId = "", proposalId = "") {
+    this._flowOpen = true;
+    this._flowPayload = null;
+    this._flowError = "";
+    this._render();
+    try {
+      const answer = await this._hass.callWS({
+        type: "katja_schedule/event_flow",
+        ...(eventId ? {event_id: eventId} : {}),
+        ...(proposalId ? {proposal_id: proposalId} : {}),
+      });
+      if (answer?.error) this._flowError = answer.error;
+      else this._flowPayload = answer;
+    } catch (e) {
+      this._flowError = e?.message || String(e);
+    }
+    if (this._flowOpen) this._render();
+  }
+  _closeFlow() {
+    this._flowOpen = false;
+    this._flowPayload = null;
+    this._render();
+  }
+
+  _renderFlowModal() {
+    const data = this._flowPayload;
+    const story = data?.story;
+    const marker = story?.marker;
+    const lanes = (data?.branches || []).map(branch => `<section class="flow-lane${marker?.branch === branch.id ? " current" : ""}">
+      <h3>${_esc(branch.label)}</h3><p>${_esc(branch.intro)}</p>
+      ${(branch.steps || []).map(step => `${step.alternative ? '<small class="flow-alt">Or, instead</small>' : ""}<button class="flow-step${marker?.step === step.id ? " current" : ""}"
+        data-flow-step="${_esc(step.id)}" data-flow-detail="${_esc(step.detail)}" aria-pressed="false">
+        ${_esc(step.label)}${marker?.step === step.id ? " · Here now" : ""}</button>`).join("")}
+    </section>`).join("");
+    const history = (story?.timeline || []).map(item => `<li>${item.step
+        ? `<button class="flow-history-step" data-flow-history-step="${_esc(item.step)}">${_esc(item.label)} · view in flow</button>`
+        : `<strong>${_esc(item.label)}</strong>`}
+      <small>${_esc(this._pacificTime(item.when))} · ${_esc(item.actor || "system")}</small>
+      ${item.note ? `<p>${_esc(item.note)}</p>` : ""}
+      ${item.step ? '<p class="flow-history-detail" hidden></p>' : ""}</li>`).join("");
+    const body = this._flowError ? `<p role="alert">${_esc(this._flowError)}</p>`
+      : !data ? "<p>Loading event flow…</p>"
+      : `${story ? `<div class="flow-focus"><strong>${_esc(story.title)}</strong><br>
+           ${_esc(story.date || "")}${story.time ? " · " + _esc(story.time) : ""}<br>
+           <b>Here now: ${_esc(marker.label)}</b>
+           ${(story.facts || []).length ? `<ul class="flow-facts">${story.facts.map(f =>
+             `<li>${_esc(f.text)}</li>`).join("")}</ul>` : ""}</div>` : ""}
+         <p>Select a step to see what it means.</p>
+         <div class="flow-lanes">${lanes}</div>
+         <button class="flow-step${marker?.step === "removed" ? " current" : ""}"
+           data-flow-step="${_esc(data.removed.id)}" data-flow-detail="${_esc(data.removed.detail)}" aria-pressed="false">
+           ${_esc(data.removed.label)}${marker?.step === "removed" ? " · Here now" : ""}</button>
+         ${data.removed_hint ? `<p class="flow-alt">${_esc(data.removed_hint)}</p>` : ""}
+         <p class="flow-explanation" aria-live="polite">Select a step to see what it means.</p>
+         ${story ? `<h3>What happened to this event</h3>
+           ${history ? `<ol class="flow-history">${history}</ol>` : "<p>No earlier actions recorded.</p>"}` : ""}`;
+    return `<div class="modal-backdrop"><div class="modal flow-modal">
+      <div class="modal-header"><span class="modal-title">How events reach the schedule</span>
+        <button class="modal-close" aria-label="Close event flow">✕</button></div>
+      <div class="modal-body">${body}</div></div></div>`;
+  }
 
   // ====================== REVIEW MODAL (fr-2026-05-11-b) ====================
   // Mirrors the web /review page so the user can apply/reject pending
@@ -1995,9 +2075,11 @@ class KatjaScheduleCard extends HTMLElement {
     return this._doReviewAction("katja_schedule/reject_proposal",
                                   {pe_id}, [pe_id]);
   }
-  _acceptCalendarEvent(event_id) {
+  // `version` is what the Accept was shown (the server's source_version);
+  // the server refuses it if the calendar changed the event since.
+  _acceptCalendarEvent(event_id, version = "") {
     return this._doReviewAction("katja_schedule/accept_event",
-                                  {event_id}, [event_id]);
+                                  version ? {event_id, version} : {event_id}, [event_id]);
   }
   _hideCalendarEvent(event_id) {
     // Off the board now, not when the answer comes back a second or two
@@ -2021,19 +2103,48 @@ class KatjaScheduleCard extends HTMLElement {
     return this._doReviewAction("katja_schedule/unhide_event",
                                   {event_id}, [event_id]);
   }
+  _followRules(event_id) {
+    return this._doReviewAction("katja_schedule/follow_rules",
+                                  {event_id}, [event_id]);
+  }
   // Bulk operations.
+  // What an Accept all was shown: each review-queue calendar item of
+  // `status`, by event id, with its source_version. null when the queue
+  // came without them (an older server, the fallback list), which keeps
+  // the old sweep: an empty map would accept nothing.
+  _shownVersions(status) {
+    const groups = this._reviewInbox?.groups;
+    if (!Array.isArray(groups)) return null;
+    const out = {};
+    let any = false;
+    for (const g of groups) {
+      const ci = g?.calendar_item;
+      if (ci?.status === status && ci.event_id && ci.source_version) {
+        out[ci.event_id] = ci.source_version; any = true;
+      }
+    }
+    return any ? out : null;
+  }
   _acceptAllNew() {
-    return this._doReviewAction("katja_schedule/accept_all_new", {}, []);
+    const versions = this._shownVersions("new");
+    return this._doReviewAction("katja_schedule/accept_all_new", versions ? {versions} : {}, []);
   }
   _hideAllNew() {
     return this._doReviewAction("katja_schedule/hide_all_new", {}, []);
   }
   _acceptAllChanged() {
-    return this._doReviewAction("katja_schedule/accept_all_changed", {}, []);
+    const versions = this._shownVersions("changed");
+    return this._doReviewAction("katja_schedule/accept_all_changed", versions ? {versions} : {}, []);
   }
   _acceptBatch(event_ids) {
+    // What the batch was shown: the server's `versions` on the recurring
+    // batch with these ids, so the server takes only those still as shown.
+    const key = (event_ids || []).slice().sort().join(",");
+    const batch = (this._reviewInbox?.recurring_batches || []).find(
+      b => (b.event_ids || []).slice().sort().join(",") === key);
+    const versions = batch?.versions && Object.keys(batch.versions).length ? batch.versions : null;
     return this._doReviewAction("katja_schedule/accept_batch",
-                                  {event_ids}, event_ids || []);
+                                  versions ? {event_ids, versions} : {event_ids}, event_ids || []);
   }
   _hideBatch(event_ids) {
     return this._doReviewAction("katja_schedule/hide_batch",
@@ -2647,6 +2758,13 @@ class KatjaScheduleCard extends HTMLElement {
     await this._unhideCalendarEvent(ev._eventId);
     this._closeDetail();
   }
+  // "Let the rules decide": drop a person's own show/hide on the event,
+  // and the Sync rules decide again (server: event_retention.follow_rules).
+  async _followRulesFromDetail(ev) {
+    if (!this._hass || !ev?._eventId) return;
+    await this._followRules(ev._eventId);
+    this._closeDetail();
+  }
 
   // ====================== RENDER ======================
 
@@ -2690,7 +2808,8 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderCalendarGrid(this._getMonAlignedDays(), grouped);
     }
 
-    const modal = this._reviewOpen ? this._renderReviewModal()
+    const modal = this._flowOpen ? this._renderFlowModal()
+                : this._reviewOpen ? this._renderReviewModal()
                 : this._detailEvent ? this._renderDetailModal(this._detailEvent)
                 : this._dayDetailDate ? this._renderDayDetailModal(this._dayDetailDate, grouped)
                 : "";
@@ -2873,17 +2992,43 @@ class KatjaScheduleCard extends HTMLElement {
       this._openEventAt(parseInt(el.dataset.eventIdx))));
     if (isPreview) this._wirePreview(pvPrev);
     this.shadowRoot.querySelector(".modal-close")?.addEventListener("click", () => {
-      if (this._reviewOpen) this._closeReview();
+      if (this._flowOpen) this._closeFlow();
+      else if (this._reviewOpen) this._closeReview();
       else if (this._detailEvent) this._closeDetail();
       else if (this._dayDetailDate) this._closeDayDetail();
     });
     const backdrop = this.shadowRoot.querySelector(".modal-backdrop");
     if (backdrop) backdrop.addEventListener("click", (e) => {
       if (e.target === backdrop) {
-        if (this._reviewOpen) this._closeReview();
+        if (this._flowOpen) this._closeFlow();
+        else if (this._reviewOpen) this._closeReview();
         else if (this._detailEvent) this._closeDetail();
         else if (this._dayDetailDate) this._closeDayDetail();
       }
+    });
+    this.shadowRoot.querySelectorAll("[data-flow-event], [data-flow-proposal]").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._openFlow(btn.dataset.flowEvent || "", btn.dataset.flowProposal || "");
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-flow-step]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const detail = this.shadowRoot.querySelector(".flow-explanation");
+        if (detail) detail.textContent = btn.dataset.flowDetail || "";
+        this.shadowRoot.querySelectorAll("[data-flow-step]").forEach(n =>
+          n.setAttribute("aria-pressed", n === btn ? "true" : "false"));
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-flow-history-step]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const node = [...this.shadowRoot.querySelectorAll("[data-flow-step]")]
+          .find(n => n.dataset.flowStep === btn.dataset.flowHistoryStep);
+        if (!node) return;
+        node.click();
+        const detail = btn.closest("li")?.querySelector(".flow-history-detail");
+        if (detail) { detail.textContent = node.dataset.flowDetail || ""; detail.hidden = false; }
+      });
     });
     // fr-2026-05-11-b: review-modal open + per-action dispatcher.
     this.shadowRoot.querySelector("#open-review")?.addEventListener("click",
@@ -2900,7 +3045,7 @@ class KatjaScheduleCard extends HTMLElement {
           .split(",").map(s => s.trim()).filter(Boolean);
         if (action === "applyProposal")  this._applyProposal(peId);
         else if (action === "rejectProposal") this._rejectProposal(peId);
-        else if (action === "acceptEvent") this._acceptCalendarEvent(evId);
+        else if (action === "acceptEvent") this._acceptCalendarEvent(evId, btn.getAttribute("data-version") || "");
         else if (action === "hideEvent")   this._hideCalendarEvent(evId);
         else if (action === "acceptAllNew") this._acceptAllNew();
         else if (action === "hideAllNew")   this._hideAllNew();
@@ -2929,6 +3074,7 @@ class KatjaScheduleCard extends HTMLElement {
       }
     }
     this.shadowRoot.querySelector(".unhide-event-btn")?.addEventListener("click", () => this._unhideEventFromDetail(this._detailEvent));
+    this.shadowRoot.querySelector(".follow-rules-btn")?.addEventListener("click", () => this._followRulesFromDetail(this._detailEvent));
     this.shadowRoot.querySelector(".modal-star")?.addEventListener("click", () => this._toggleStar(this._detailEvent));
     // fr-2026-05-11-b: inline Accept/Reject on the event-detail sheet.
     this.shadowRoot.querySelector(".inline-apply")?.addEventListener("click", async (e) => {
@@ -2941,7 +3087,8 @@ class KatjaScheduleCard extends HTMLElement {
     });
     this.shadowRoot.querySelector(".inline-accept-cal")?.addEventListener("click", async (e) => {
       const id = e.currentTarget.getAttribute("data-event-id");
-      if (id) { await this._acceptCalendarEvent(id); this._closeDetail(); }
+      const version = e.currentTarget.getAttribute("data-version") || "";
+      if (id) { await this._acceptCalendarEvent(id, version); this._closeDetail(); }
     });
     this.shadowRoot.querySelector(".inline-hide-cal")?.addEventListener("click", async (e) => {
       const id = e.currentTarget.getAttribute("data-event-id");
@@ -3097,6 +3244,7 @@ class KatjaScheduleCard extends HTMLElement {
       <div class="modal review-modal">
         <div class="modal-header">
           <span class="modal-title">Review queue</span>
+          <button class="flow-info" data-flow-event="" aria-label="How events reach the schedule">i</button>
           <button class="modal-close">✕</button>
         </div>
         <div class="modal-body review-body">${body}</div>
@@ -3121,11 +3269,12 @@ class KatjaScheduleCard extends HTMLElement {
       calHtml = `<div class="review-item review-item-calendar review-status-${_esc(ci.status)}">
         <div class="review-item-tag">${_esc(statusLabel)}</div>
         <div class="review-item-main">
-          <div class="review-item-line"><strong>${_esc(ci.what || "")}</strong></div>
+          <div class="review-item-line"><strong>${_esc(ci.what || "")}</strong>
+            <button class="flow-info" data-flow-event="${_esc(ci.event_id || "")}" aria-label="Flow and history for ${_esc(ci.what || "this event")}">i</button></div>
           <div class="review-item-meta">${_esc(ci.date || "")} ${_esc(ci.time || "")} · ${_esc(ci.who || "")}${ci.where ? " · " + _esc(ci.where) : ""}</div>
         </div>
         <div class="review-actions">
-          <button class="review-btn accept" data-review-action="acceptEvent" data-event-id="${_esc(ci.event_id || "")}"${cDis}>Accept</button>
+          <button class="review-btn accept" data-review-action="acceptEvent" data-event-id="${_esc(ci.event_id || "")}" data-version="${_esc(ci.source_version || "")}"${cDis}>Accept</button>
           <button class="review-btn hide" data-review-action="hideEvent" data-event-id="${_esc(ci.event_id || "")}"${cDis}>Hide</button>
         </div>
       </div>`;
@@ -3138,7 +3287,8 @@ class KatjaScheduleCard extends HTMLElement {
       return `<div class="review-item review-item-proposal">
         <div class="review-item-tag review-tag-agent">${dup ? "DUPLICATE" : "AGENT"}</div>
         <div class="review-item-main">
-          <div class="review-item-line">${_esc(summary)}</div>
+          <div class="review-item-line">${_esc(summary)}
+            <button class="flow-info" data-flow-proposal="${_esc(p.id)}" aria-label="Flow and history for this suggestion">i</button></div>
           ${p.source ? `<div class="review-item-meta review-item-source${p.unverified === true ? " unverified" : ""}">${_esc(p.source)}</div>` : ""}
           ${p.reason ? `<div class="review-item-meta">— ${_esc(p.reason)}</div>` : ""}
           ${p.added_at ? `<div class="review-item-meta">queued ${_esc(this._pacificTime(p.added_at))}</div>` : ""}
@@ -3229,7 +3379,7 @@ class KatjaScheduleCard extends HTMLElement {
       // Calendar diff row — promote into overlay or hide it.
       inlineReviewSection = `<div class="inline-review-bar">
         <span class="inline-review-label">Calendar ${_esc(status.toUpperCase())}</span>
-        <button class="review-btn accept inline-accept-cal" data-event-id="${_esc(evId)}"${idis}>Accept</button>
+        <button class="review-btn accept inline-accept-cal" data-event-id="${_esc(evId)}" data-version="${_esc(ev._version || "")}"${idis}>Accept</button>
         <button class="review-btn hide inline-hide-cal" data-event-id="${_esc(evId)}"${idis}>Hide</button>
       </div>`;
     }
@@ -3251,6 +3401,9 @@ class KatjaScheduleCard extends HTMLElement {
       // Opens the in-modal hide menu (this one / every “X” / containing…)
       // — see _renderHideMenu. No confirm() dialog on this path any more.
       hideSection = `<button class="hide-event-btn" ${(this._actionLoading || inFlight)?"disabled":""}>✕ Hide…</button>`;
+    }
+    if (evId && ev._choice) {
+      hideSection += `<button class="follow-rules-btn" ${this._actionLoading?"disabled":""}>Let the rules decide</button>`;
     }
 
     // Recheck section. Flight events get TWO affordances side-by-side
@@ -3465,12 +3618,14 @@ class KatjaScheduleCard extends HTMLElement {
           <div class="modal-header">
             <span class="modal-dot" style="background:${_esc(color)}"></span>
             <span class="modal-title">${_esc(summary)}</span>
+            <button class="flow-info" ${peId ? `data-flow-proposal="${_esc(peId)}"` : `data-flow-event="${_esc(evId)}"`}
+              aria-label="Flow and history for this event">i</button>
             ${starButton}
             <button class="modal-close">✕</button>
           </div>
           ${pendingBanner}
           <div class="modal-body">${this._hideMenu ? this._renderHideMenu(ev) : `
-            <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}</span></div>
+            <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}${ev._was ? `<span class="modal-was"> · was ${_esc(ev._was)}</span>` : ""}</span></div>
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
             ${notes ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(notes)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
@@ -3694,7 +3849,9 @@ class KatjaScheduleCard extends HTMLElement {
     // Deleted upstream, or a removal waiting in review: struck through,
     // as on every other view — an unmarked one on the wall is an
     // invitation to go to something that isn't happening.
-    if ((ev._status || "") === "orphan" || ev._pendingProposal?.kind === "remove") cls += " is-struck";
+    // Struck: cancelled by its calendar, or a removal waiting. One merely
+    // missing from its calendar's last read is not struck (2026-10-13).
+    if (((ev._status || "") === "orphan" && ev._cancelled) || ev._pendingProposal?.kind === "remove") cls += " is-struck";
     let time = "All day";
     const s = ev.start?.dateTime ? this._pacificTimeParts(ev.start.dateTime) : null;
     if (s) time = `${s.h}:${String(s.m).padStart(2, "0")} ${s.ampm}`;
@@ -3935,7 +4092,7 @@ class KatjaScheduleCard extends HTMLElement {
         // today", so an unmarked orphan here undoes the marking on the
         // list beside it.
         const dvOrphan = (ev._status || "") === "orphan";
-        const cls = `dv-event is-${tier}${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${dvOrphan ? " is-orphan" : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
+        const cls = `dv-event is-${tier}${isCompact ? " is-compact" : ""}${flagged ? " is-flagged" : ""}${dvOrphan ? (ev._cancelled ? " is-orphan is-cancelled" : " is-orphan") : ""}${isDrive ? " is-drive" : ""}${pending ? ` is-pending pending-${pending}` : ""}`;
         const evIdx = (this._renderedEvents || this._events || []).indexOf(ev);
         const timeStr = this._formatTime(ev);
         const summary = _esc(ev.summary || "");
@@ -4523,14 +4680,19 @@ class KatjaScheduleCard extends HTMLElement {
     // isn't happening (bug-ios-20260813-123557: a practice that had
     // moved showed the dead slot and the real one side by side).
     // Pending proposals still win the tag slot — a queued decision is
-    // the more urgent fact. Same word as the web, iOS and the review
-    // modal: REMOVED. Struck through by .event.is-orphan, at full
-    // strength: people read it until the removal is confirmed (Ken,
-    // 2026-10-05), so it is not faded.
+    // the more urgent fact. Struck through (.event.is-cancelled) only when
+    // its calendar cancelled it, at full strength: people read it until
+    // it is acknowledged, so it is not faded.
+    // Missing from its calendar's last read is not a cancellation (Ken,
+    // 2026-10-13: "Match the web"): such a row keeps its dashed edge and
+    // says NOT IN CALENDAR; only one its calendar cancelled is struck
+    // through, as CANCELLED, until it is acknowledged.
     const isOrphan = (ev._status || "") === "orphan";
-    const orphanClass = isOrphan ? " is-orphan" : "";
+    const orphanClass = isOrphan ? (ev._cancelled ? " is-orphan is-cancelled" : " is-orphan") : "";
     const orphanTag = (isOrphan && !pendingTag)
-      ? `<span class="orphan-tag" title="No longer in the calendar — stays until the removal is confirmed in Review.">REMOVED</span>`
+      ? (ev._cancelled
+         ? `<span class="orphan-tag" title="Its calendar cancelled it — stays until it is acknowledged in Review.">CANCELLED</span>`
+         : `<span class="orphan-tag" title="Not in its calendar's last read: it may have been renamed or moved. It stays until someone decides in Review.">NOT IN CALENDAR</span>`)
       : "";
     const colorAttr = _esc(ev._color || "#888");
     // fr-2026-05-19-b parity: continuation rows (intermediate / end
@@ -4694,12 +4856,12 @@ class KatjaScheduleCard extends HTMLElement {
         // Single-day events are a person-colored bullet + text — no
         // filled background box (fr-2026-05-20). flagged → struck out.
         // Not a tap target: see the day tap targets below.
-        // Deleted upstream — see `_renderEvent`. A chip is too small for
-        // a REMOVED tag, so it is struck through (.cal-orphan), at full
-        // strength: people read it until the removal is confirmed (Ken,
-        // 2026-10-05). Without this the month grid keeps showing a
-        // practice the calendar no longer has.
-        const calOrphan = (ev._status || "") === "orphan";
+        // Cancelled by its calendar — see `_renderEvent`. A chip is too
+        // small for a tag, so it is struck through (.cal-orphan), at full
+        // strength: people read it until it is acknowledged. One merely
+        // missing from its calendar's last read is drawn as it is (Ken,
+        // 2026-10-13: "Match the web"); its row and sheet say so.
+        const calOrphan = (ev._status || "") === "orphan" && ev._cancelled;
         const orphanCls = calOrphan ? " cal-orphan" : "";
         return `<div class="cal-event${pendingCls}${orphanCls}" style="${fl?"opacity:0.4;text-decoration:line-through":""}"><span class="cal-event-dot" style="background:${c}"></span><span class="cal-event-time">${this._formatTimeShort(ev)}</span><span class="cal-event-text">${pendingPrefix}${_esc(ev.summary||"")}</span></div>`;
       }).join("");
@@ -5119,7 +5281,8 @@ class KatjaScheduleCard extends HTMLElement {
          opens the detail modal. */
       .dv-event.is-stub { padding: 0; background: var(--event-hover); }
       .dv-event.is-flagged { opacity: 0.4; text-decoration: line-through; }
-      .dv-event.is-orphan { text-decoration: line-through; border-left-style: dashed !important; }
+      .dv-event.is-orphan { border-left-style: dashed !important; }
+      .dv-event.is-cancelled { text-decoration: line-through; }
       .dv-event.is-drive { font-style: italic; opacity: 0.85; }
       .dv-event.is-pending {
         border: 1.5px dashed #946B1F; background: rgba(224,160,32,0.18);
@@ -5192,10 +5355,10 @@ class KatjaScheduleCard extends HTMLElement {
       .event.is-pending.pending-remove { border-left-color: #C8401E; background: rgba(200,64,30,0.06); text-decoration: line-through; }
       /* Deleted upstream, awaiting confirmation. Deliberately grey and
          quiet rather than alarming — this isn't a problem, it's a row
-         that has stopped being real. Like the web's tr.row-orphan, its
-         edge goes grey, and it says REMOVED as iOS does. Struck
-         through, never faded: people read it until the removal is
-         confirmed (Ken, 2026-10-05), so its words, the tag's included,
+         its calendar no longer returns. Like the web's tr.row-orphan, its
+         edge goes grey and it says NOT IN CALENDAR; struck through only
+         when its calendar cancelled it (CANCELLED; Ken, 2026-10-13), never
+         faded: people read it until it is settled, so its words, the tag's included,
          keep the theme's own text colour (#9A9A9A read 2:1 on the light
          themes). The month chip (.cal-orphan) and the day grid block are
          the same; the preview's struck row keeps its 0.7, which reads
@@ -5203,7 +5366,8 @@ class KatjaScheduleCard extends HTMLElement {
          NOTE: no backticks in this block — it lives inside a JS
          template literal, and one would end the string. */
       .orphan-tag { display: inline-flex; align-items: center; background: rgba(140,140,140,0.18); color: var(--text); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-sm); text-decoration: none; letter-spacing: 0.3px; }
-      .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); text-decoration: line-through; }
+      .event.is-orphan { border-left: 3px dashed #8A8A8A; padding-left: calc(var(--event-pad-h) - 3px); }
+      .event.is-cancelled { text-decoration: line-through; }
       .cal-event.cal-orphan { text-decoration: line-through; }
       .no-events { padding: 8px 4px; font-size: 15px; color: var(--muted); opacity: 0.5; font-style: italic; }
       .weekend .day-header { color: var(--muted); opacity: 0.85; }
@@ -5505,6 +5669,30 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .modal-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
       .modal-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--text-strong); flex: 1; }
+      .flow-info { width: 30px; height: 30px; flex: none; border: 1px solid var(--accent);
+        border-radius: 50%; background: transparent; color: var(--text-strong); font-weight: 800;
+        cursor: pointer; margin-left: 7px; }
+      .flow-modal { max-width: 880px; }
+      .flow-modal .modal-body { overflow-y: auto; max-height: 76vh; }
+      .flow-focus { padding: 10px; border: 1px solid var(--accent); border-radius: 8px; }
+      .flow-lanes { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+      .flow-lane { padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+      .flow-lane.current { border-color: var(--accent); }
+      .flow-lane h3 { margin: 0 0 5px; font-size: 14px; }
+      .flow-lane p { color: var(--muted); font-size: 12px; }
+      .flow-step { display: block; width: 100%; padding: 8px; margin: 5px 0; text-align: left;
+        border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg);
+        color: var(--text); cursor: pointer; }
+      .flow-step.current { border: 2px solid var(--accent); color: var(--accent-ink); font-weight: 700; }
+      .flow-explanation { padding: 9px; border-left: 3px solid var(--accent); }
+      .flow-history { padding-left: 22px; }
+      .flow-facts { margin: 6px 0 0; padding-left: 18px; }
+      .flow-alt { display: block; margin-top: 6px; font-style: italic; }
+      .flow-history li { margin: 10px 0; }
+      .flow-history small { display: block; color: var(--muted); }
+      .flow-history-step { border: 0; background: none; color: var(--accent-ink);
+        font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
+      @media (max-width: 700px) { .flow-lanes { grid-template-columns: 1fr; } }
       .modal-close { background: transparent; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); }
       .modal-close:hover { background: var(--event-hover); color: var(--text-strong); }
       /* fr-2026-05-19 HA-parity: post-mutation toast pill. Bottom-
@@ -5532,6 +5720,7 @@ class KatjaScheduleCard extends HTMLElement {
       .modal-row { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 15px; line-height: 1.4; }
       .modal-row:last-child { border-bottom: none; }
       .modal-label { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; min-width: 60px; padding-top: 2px; }
+      .modal-was { font-style: italic; }
       .modal-desc { font-size: 13px; color: var(--muted); line-height: 1.4; }
 
       /* fr-2026-05-11-b: review modal — duplicates the web /review
@@ -5699,6 +5888,7 @@ class KatjaScheduleCard extends HTMLElement {
       .hm-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
       .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: var(--label-unhide-fill); color: var(--label-unhide); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .unhide-event-btn:hover { background: var(--label-unhide-hover); }
+      .follow-rules-btn { display: block; width: 100%; margin-top: 8px; padding: 10px; border: 1px solid var(--divider-color, #ccc); border-radius: var(--radius-sm); background: none; color: inherit; font-family: var(--font); font-size: 14px; cursor: pointer; }
       .unhide-event-btn:disabled { opacity: 0.5; cursor: wait; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
