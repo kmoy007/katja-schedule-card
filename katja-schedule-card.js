@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.100.0";
+const CARD_VERSION = "0.101.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1147,6 +1147,14 @@ class KatjaScheduleCard extends HTMLElement {
             // ones. Absent on an older integration: no highlight, and
             // the question still works.
             _pickup: meta.pickup || "",
+            // "Dropoff: taxi" / "Dropoff: drive:Ken" (integration
+            // 0.44.0+): its twin for a flight leaving LA, "how is X
+            // getting to the airport?" (_dropoffAsked).
+            _dropoff: meta.dropoff || "",
+            // The row's own `Who:` line, without the calendar-label
+            // fallback `_label` takes: the departure question names the
+            // traveller, never a calendar.
+            _who: meta.who || "",
             // "Live: 1" (integration 0.30.0+) — the poller's live-status
             // copy of a delayed flight, flagged by the server. It is
             // deleted when the delay clears, so the pickup question is
@@ -1352,7 +1360,7 @@ class KatjaScheduleCard extends HTMLElement {
       // spans across every covered day and show per-row star state.
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
-          || k === "pickup" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
+          || k === "pickup" || k === "dropoff" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
           || k === "title" || k === "drive") {
         out[k] = m[2].trim();
       }
@@ -1522,6 +1530,14 @@ class KatjaScheduleCard extends HTMLElement {
     return this._isDrive(s) && !s.includes("\u{1F697}") ? `\u{1F697} ${s}` : s;
   }
   _isFlight(s) { return s && (s.includes("✈") || s.toLowerCase().includes("flight") || s.toLowerCase().includes("lands")); }
+  // Whether the event sheet treats a row as a flight: its flight tag (the
+  // integration's `Flight:` line, `_flight`) or, for a row without one, the
+  // words in its title. The web sheet's `isFlightEvent`, which reads the
+  // tag first. Until 2026-10-14 the sheet went by the title alone, so a
+  // tagged flight titled "Ken to London (AA136)" got neither ride
+  // question, nor Recheck Flight. The row's ✈ badge (`_renderEvent`) still
+  // goes by the title: it is the wall's look, not a question.
+  _isFlightEvent(ev) { return !!ev && (!!ev._flight || !!this._isFlight(ev.summary || "")); }
 
   // Mirror of templates/schedule.html's `_LA_AIRPORTS` so the wall
   // display picks the same address the web app does. Drive-from-home
@@ -1543,16 +1559,30 @@ class KatjaScheduleCard extends HTMLElement {
     ONT: "2900 E Airport Dr, Ontario, CA 91761",
   };
 
+  // The integration's `Flight: <number> <A>→<B>` line → {number, origin,
+  // destination}, or null. The one reader of that line: the sheet's
+  // airport, Recheck Flight and the row's ✈ badge all come here. The
+  // number may be empty: `flight_tag.detect` tags a route with no number
+  // ("LAX → SLC"), which the integration writes as `Flight:  LAX→SLC`, and
+  // the web, the phone and the server ask that flight's ride question
+  // too. Anchored to the start of a line, so an itinerary quoted in the
+  // `Notes:` line, which comes first, is never read as the tag.
+  _flightLine(ev) {
+    const m = (ev?.description || "").match(
+      /^[ \t]*Flight:[ \t]*(?:(\S.*?)[ \t]+)?([A-Z]{3})[ \t]*→[ \t]*([A-Z]{3})[ \t\r]*$/m);
+    return m ? { number: m[1] || "", origin: m[2], destination: m[3] } : null;
+  }
+
   // Returns {address, iata, direction} for a flight calendar event,
   // or null if the description doesn't carry a `Flight: <num> A→B`
-  // line. Direction is "outbound" when origin is LA-area, "inbound"
-  // when destination is LA-area; foreign-to-foreign legs fall back
-  // to outbound semantics with the origin IATA.
+  // line (`_flightLine`; the number may be empty). Direction is
+  // "outbound" when origin is LA-area, "inbound" when destination is
+  // LA-area; foreign-to-foreign legs fall back to outbound semantics
+  // with the origin IATA.
   _flightAirportInfo(ev) {
-    const desc = ev?.description || "";
-    const m = desc.match(/Flight:\s*\S+\s+([A-Z]{3})\s*→\s*([A-Z]{3})/);
-    if (!m) return null;
-    const origin = m[1].toUpperCase(), destination = m[2].toUpperCase();
+    const line = this._flightLine(ev);
+    if (!line) return null;
+    const origin = line.origin, destination = line.destination;
     const map = this.constructor._LA_AIRPORT_ADDRESSES;
     if (map[origin]) {
       return { address: map[origin], iata: origin, direction: "outbound" };
@@ -1774,7 +1804,7 @@ class KatjaScheduleCard extends HTMLElement {
   _uxContext(ev) {
     const summary = ev?.summary || "";
     if (this._isDrive(summary)) return "drive";
-    if (!this._isFlight(summary)) return "plain";
+    if (!this._isFlightEvent(ev)) return "plain";
     const dir = this._flightAirportInfo(ev)?.direction;
     return dir === "inbound" ? "flight-arrival" : dir === "outbound" ? "flight-departure" : "flight";
   }
@@ -1787,6 +1817,8 @@ class KatjaScheduleCard extends HTMLElement {
     const pending = new Set();
     // Not on a live-status copy: it shows no question to abandon.
     if (ctx === "flight-arrival" && ev?._eventId && !ev._live) pending.add("pickup.question");
+    // A departure's twin, only where the sheet shows it, as the web does.
+    if (this._dropoffAsked(ev)) pending.add("dropoff.question");
     this._uxSheet = { ctx, acted: false, pending };
   }
   _uxSheetClose() {
@@ -1809,6 +1841,11 @@ class KatjaScheduleCard extends HTMLElement {
       [".pickup-btn", el => ["pickup." + (el.dataset.outcome === "drive"
           ? (el.dataset.driver || "drive").toLowerCase().replace(/[^a-z0-9]+/g, "-")
           : (el.dataset.outcome || "other").replace(/_/g, "-")), { settles: "pickup.question" }]],
+      // The web's rule for the same chips: dropoff.katja, dropoff.ken,
+      // dropoff.taxi, dropoff.no-drive.
+      [".dropoff-btn", el => ["dropoff." + (el.dataset.outcome === "drive"
+          ? (el.dataset.driver || "drive").toLowerCase().replace(/[^a-z0-9]+/g, "-")
+          : (el.dataset.outcome || "other").replace(/_/g, "-")), { settles: "dropoff.question" }]],
       [".hide-event-btn", () => ["sheet.hide", { opens: "hide.menu" }]],
       [".hm-hide-one", () => ["hide.one", { settles: "hide.menu" }]],
       [".hm-hide-exact", () => ["hide.exact", { settles: "hide.menu" }]],
@@ -1861,8 +1898,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._openDetail(target);
   }
 
-  _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
-  _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
@@ -2218,15 +2255,30 @@ class KatjaScheduleCard extends HTMLElement {
     this._recheckLoading = false; this._render();
   }
 
+  // The flight's number to look up: the tag's, else one in the title
+  // ("AA136"), else none. A tag with no number (a route, "LAX → SLC") has
+  // nothing to look up, and the card used to send "unknown", which the
+  // server spent flight-data units searching for.
+  _flightNumberToLookUp(ev) {
+    const tagged = this._flightLine(ev)?.number;
+    if (tagged) return tagged;
+    const m = (ev?.summary || "").match(/\b([A-Z]{2}\d{1,4})\b/);
+    return m ? m[1] : "";
+  }
+
   async _recheckFlight(ev) {
     if (!this._hass) return;
+    const number = this._flightNumberToLookUp(ev);
+    if (!number) {
+      this._recheckResult = { ok: false, error: "This flight has no flight number to look up." };
+      this._render();
+      return;
+    }
     this._recheckLoading = true; this._render();
     try {
-      const desc = ev.description || ev.summary || "";
-      const flightMatch = desc.match(/Flight:\s*(\S+)\s+(\S+)→(\S+)/);
-      const msg = { type: "katja_schedule/refresh_flight" };
-      if (flightMatch) { msg.flight_number = flightMatch[1]; msg.origin = flightMatch[2]; msg.destination = flightMatch[3]; }
-      else { const m = (ev.summary||"").match(/\b([A-Z]{2}\d{1,4})\b/); msg.flight_number = m ? m[1] : "unknown"; }
+      const line = this._flightLine(ev);
+      const msg = { type: "katja_schedule/refresh_flight", flight_number: number };
+      if (line) { msg.origin = line.origin; msg.destination = line.destination; }
       msg.date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
       this._recheckResult = await this._hass.callWS(msg);
     } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
@@ -2252,6 +2304,7 @@ class KatjaScheduleCard extends HTMLElement {
   async _planPickup(ev, outcome, driver) {
     if (!this._hass || !ev?._eventId) return;
     this._pickupLoading = true; this._pickupResult = null; this._render();
+    let result;
     try {
       const res = await this._hass.callWS({
         type: "katja_schedule/plan_pickup",
@@ -2261,7 +2314,8 @@ class KatjaScheduleCard extends HTMLElement {
       // Move the highlight now. The re-read below confirms it from the
       // calendar entity, which integration 0.31.1+ has already brought up
       // to date; an older one catches up only at its next poll, and this
-      // highlight is then the only sign the tap did anything.
+      // highlight is then the only sign the tap did anything. On `ev`
+      // itself, whichever sheet is open by now: it is that event's answer.
       if (ev) ev._pickup = outcome === "drive" ? `drive:${driver || ""}` : outcome;
       // The sentence is the server's (app._pickup_message), shown as it
       // comes, including what became of the previous one. Web, card and
@@ -2271,16 +2325,97 @@ class KatjaScheduleCard extends HTMLElement {
       // behind it) must not read like a good one. A server older than the
       // sentence gets a plain "Saved.", not the green of a good result: it
       // may be hiding a warning this card can no longer word.
-      this._pickupResult = res && res.message
+      result = res && res.message
         ? { text: res.message, bad: !!res.message_warns }
         : { text: "Saved.", bad: false, plain: true };
     } catch (e) {
-      this._pickupResult = { text: "Could not settle the pickup: " + e.message, bad: true };
+      result = { text: "Could not settle the pickup: " + e.message, bad: true };
     }
-    this._pickupLoading = false; this._render();
+    // The reply belongs to the sheet it was asked on. If another event's
+    // sheet opened while the server answered (or this one closed), it
+    // stays off it: written there, it read as that event's answer.
+    if (this._detailEvent === ev) {
+      this._pickupResult = result;
+      this._pickupLoading = false; this._render();
+    }
     // The board too: a driver's answer adds a 🚗 row, and the integration
     // re-read the server before it answered. Without this the row waited
     // for the card's own five-minute fetch.
+    this._fetchEvents();
+  }
+
+  // A flight whose ORIGIN is one of the household's airports: where "how
+  // is X getting to the airport?" belongs, the pickup question's twin
+  // (Ken, 2026-10-14: "Ask, like arrivals"). `_flightAirportInfo` also
+  // calls a leg between two other airports "outbound", so the origin is
+  // checked against the table itself; the server refuses any other row.
+  _leavesFromHome(ev) {
+    if (!this._isFlightEvent(ev)) return false;
+    const info = this._flightAirportInfo(ev);
+    return !!(info && info.direction === "outbound"
+              && this.constructor._LA_AIRPORT_ADDRESSES[info.iata]);
+  }
+
+  // Whether the sheet asks it: on the flight's own row. Never on the
+  // live-status copy of a delayed flight, which goes away when the delay
+  // clears (the server refuses an answer on it too); that copy points to
+  // the flight's own row instead (`dropoffElsewhere` in the sheet).
+  _dropoffAsked(ev) {
+    return !!(ev?._eventId && !ev._live && this._leavesFromHome(ev));
+  }
+
+  // "How is Ken…", "How are Caleb & Sam…" (two or more travellers: "&",
+  // ",", "+" or "and"), "How are they…" with nobody named. The web sheet's
+  // `_dropoffQuestion`, by its `_SEVERAL_TRAVELLERS` rule, which
+  // tests/test_ha_card_dropoff.py holds this copy to.
+  _dropoffQuestion(who) {
+    const several = /[&,+]|\band\b/i;
+    if (!who) return "How are they getting to the airport?";
+    return several.test(who) ? `How are ${who} getting to the airport?`
+                             : `How is ${who} getting to the airport?`;
+  }
+
+  // "Dropoff: taxi" / "Dropoff: drive:Ken" → {outcome, driver}, read as
+  // the pickup line is (the integration writes the answer that holds).
+  _dropoffAnswer(ev) { return this._pickupAnswer({ _pickup: ev?._dropoff }); }
+
+  // Settle "how is X getting to the airport?" from the wall card. The
+  // server works it out on the flight's one ride row (`app._settle_dropoff`)
+  // and words the reply (`app._dropoff_message`); the card contributes the
+  // tap and prints the sentence as it comes. Do not do arithmetic here.
+  async _planDropoff(ev, outcome, driver) {
+    if (!this._hass || !ev?._eventId) return;
+    this._dropoffLoading = true; this._dropoffResult = null; this._render();
+    let result;
+    try {
+      const res = await this._hass.callWS({
+        type: "katja_schedule/plan_dropoff",
+        event_id: ev._eventId, outcome, driver: driver || "",
+      });
+      // `event_not_found` is the server's 404: the row went while the sheet
+      // was open (a sync, another surface). Said in words, as the web does.
+      if (res && res.ok === false) {
+        throw new Error(res.error === "event_not_found"
+          ? "that departure is no longer on the schedule. Refresh and try again."
+          : (res.error || "unknown"));
+      }
+      // Move the highlight now; the re-read below confirms it. On `ev`
+      // itself, whichever sheet is open by now: it is that event's answer.
+      if (ev) ev._dropoff = outcome === "drive" ? `drive:${driver || ""}` : outcome;
+      // The server's sentence, a warning styled as one. A server too old
+      // to send it gets a plain "Saved.", as the pickup does.
+      result = res && res.message
+        ? { text: res.message, bad: !!res.message_warns }
+        : { text: "Saved.", bad: false, plain: true };
+    } catch (e) {
+      result = { text: "Could not settle the ride: " + e.message, bad: true };
+    }
+    // The reply belongs to the sheet it was asked on (as `_planPickup`'s).
+    if (this._detailEvent === ev) {
+      this._dropoffResult = result;
+      this._dropoffLoading = false; this._render();
+    }
+    // The ride row's change waits in Review; the board and its count too.
     this._fetchEvents();
   }
 
@@ -3064,6 +3199,8 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
     this.shadowRoot.querySelectorAll(".pickup-btn").forEach(btn => btn.addEventListener(
       "click", () => this._planPickup(this._detailEvent, btn.dataset.outcome, btn.dataset.driver || "")));
+    this.shadowRoot.querySelectorAll(".dropoff-btn").forEach(btn => btn.addEventListener(
+      "click", () => this._planDropoff(this._detailEvent, btn.dataset.outcome, btn.dataset.driver || "")));
     this.shadowRoot.querySelector(".hide-event-btn")?.addEventListener("click", () => this._openHideMenu(this._detailEvent));
     this._wireHideMenu();
     if (focusedHm) {
@@ -3337,7 +3474,8 @@ class KatjaScheduleCard extends HTMLElement {
     // metadata block, which the card parses and the household should never
     // see. `_notes` is the event's own commentary, pulled out of it.
     const notes = ev._notes || "";
-    const isDrive = this._isDrive(summary), isFlight = this._isFlight(summary);
+    // A flight by its tag, else its title (`_isFlightEvent`, the web's rule).
+    const isDrive = this._isDrive(summary), isFlight = this._isFlightEvent(ev);
     const hasAddress = this._hasAddress(ev), hasArrow = this._hasArrow(ev);
     const color = ev._color || "#888";
 
@@ -3459,6 +3597,47 @@ class KatjaScheduleCard extends HTMLElement {
           ${pr ? `<div class="pickup-result ${pr.bad ? "bad" : pr.plain ? "plain" : ""}">${_esc(pr.text)}</div>` : ""}
         </div>`;
     }
+    // Its twin for a departure (Ken, 2026-10-14: "Ask, like arrivals"):
+    // how the traveller is getting to the airport, on a flight leaving one
+    // of the household's airports (`_dropoffAsked`). Same look as the
+    // pickup block; its own chips (`dropoff-btn`), wired to `_planDropoff`.
+    // On the live-status copy of a delayed departure there is no question,
+    // and Add drive row points to the flight's own row (`dropoffElsewhere`),
+    // as the arrival's copy does and as the web sheet does.
+    const dropoffOwns = this._dropoffAsked(ev);
+    const dropoffElsewhere = !!ev._live && this._leavesFromHome(ev);
+    // The question as it reads, without " Tap to change.": the block's
+    // first line, and the words Add drive row's line points to.
+    const dropoffQuestion = dropoffOwns ? this._dropoffQuestion((ev._who || "").trim()) : "";
+    if (dropoffOwns) {
+      const dr = this._dropoffResult;
+      const answer = this._dropoffAnswer(ev);
+      const dis = this._dropoffLoading ? "disabled" : "";
+      const drivers = this.constructor.PICKUP_DRIVERS;
+      const mine = (outcome, driver) => !!(answer && answer.outcome === outcome
+                                           && (outcome !== "drive" || answer.driver === driver));
+      const chipAttrs = (outcome, driver) =>
+        `class="dropoff-btn${mine(outcome, driver) ? " chosen" : ""}" aria-pressed="${mine(outcome, driver)}"`;
+      // "Tap to change." only under a lit chip: an answer none of them is
+      // (a drive with no driver) is no answer to change.
+      const answered = drivers.some(d => mine("drive", d)) || mine("taxi") || mine("no_drive");
+      const question = dropoffQuestion;
+      const chips = drivers
+        .map(d => `<button ${chipAttrs("drive", d)} data-outcome="drive" data-driver="${_esc(d)}" ${dis}>🚗 ${_esc(d)}</button>`)
+        .join("");
+      recheckSection += `
+        <div class="pickup-block dropoff-block">
+          <div class="pickup-q">${_esc(answered ? question + " Tap to change." : question)}</div>
+          <div class="pickup-hint">Arrives at the airport with time to check in. The drive is solved back from there on pessimistic traffic.</div>
+          <div class="pickup-buttons">
+            ${chips}
+            <button ${chipAttrs("taxi")} data-outcome="taxi" ${dis}>🚕 Taxi / rideshare</button>
+            <button ${chipAttrs("no_drive")} data-outcome="no_drive" ${dis}>✕ No drive needed</button>
+          </div>
+          ${this._dropoffLoading ? '<div class="pickup-result">⏳ Working it out…</div>' : ""}
+          ${dr ? `<div class="pickup-result ${dr.bad ? "bad" : dr.plain ? "plain" : ""}">${_esc(dr.text)}</div>` : ""}
+        </div>`;
+    }
     if (isFlight) {
       // `+=`, NOT `=`. This was an assignment, and since `pickupOwns` is
       // only ever true for a flight, it threw away the pickup question
@@ -3527,6 +3706,17 @@ class KatjaScheduleCard extends HTMLElement {
               ? "use <strong>Who is collecting them?</strong> above"
               : "open the flight's own row and use <strong>Who is collecting them?</strong>";
             actions = `<div class="pickup-instead">That is the drive <em>back</em> from the airport. To plan the collection, ${where} — it adds the airport processing time and solves the drive in the right direction.</div>`;
+          } else if (dropoffOwns || dropoffElsewhere) {
+            // The ride to the airport is the question's, which works on
+            // the flight's one ride row; Add drive row would add a second
+            // (the web's words, `recheck-dropoff-instead`).
+            // On the flight's own row, the question as it reads above it
+            // ("How is Ken…"); on the live copy, the generic one, since the
+            // traveller is named on the row it points to.
+            const where = dropoffOwns
+              ? `use <strong>${_esc(dropoffQuestion)}</strong> above`
+              : "open the flight's own row and use <strong>How are they getting to the airport?</strong>";
+            actions = `<div class="pickup-instead">To put the ride to the airport on the schedule, ${where}: it leaves the time the airport needs and works on the flight's one ride row.</div>`;
           } else {
             actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${_esc(r.duration_text)} drive row before this event (with traffic)`}</button>`;
           }
@@ -4532,6 +4722,7 @@ class KatjaScheduleCard extends HTMLElement {
       start, end,
       _color: personColorFor(personKeyFor(ev.who, ev.person)),
       _label: ev.who || "",
+      _who: ev.who || "",
       _status: ev.status || "",
       _eventId: ev.event_id || "",
       _calendarLabel: ev.calendar_label || "",
@@ -4654,7 +4845,8 @@ class KatjaScheduleCard extends HTMLElement {
     if (flagged && !this._dayShowsFlagged(dayDs)) return "";
     const isFlight = this._isFlight(summary), description = ev.description||"";
     let flightBadge = "";
-    if (isFlight && description) { const m = description.match(/Flight:\s*(\S+)/); if (m) flightBadge = `<span class="flight-badge">✈ ${_esc(m[1])}</span>`; }
+    const flightLine = isFlight && description ? this._flightLine(ev) : null;
+    if (flightLine) flightBadge = `<span class="flight-badge">✈ ${_esc(flightLine.number || `${flightLine.origin}→${flightLine.destination}`)}</span>`;
     // fr-2026-05-07-d: pending-proposal badge in parity with web. The
     // _pendingProposal annotation comes from the render-time fold of
     // this._pendingProposals (matchPendingProposal + ghost adds).
@@ -5900,10 +6092,10 @@ class KatjaScheduleCard extends HTMLElement {
       .pickup-q { font-size: 16px; font-weight: 700; }
       .pickup-hint { font-size: 12px; color: var(--muted); margin: 3px 0 10px; }
       .pickup-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-      .pickup-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
-      .pickup-btn[disabled] { opacity: 0.5; cursor: default; }
-      .pickup-btn.chosen { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
-      .pickup-btn.chosen:hover:not(:disabled) { background: var(--accent-ink); border-color: var(--accent-ink); }
+      .pickup-btn, .dropoff-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
+      .pickup-btn[disabled], .dropoff-btn[disabled] { opacity: 0.5; cursor: default; }
+      .pickup-btn.chosen, .dropoff-btn.chosen { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
+      .pickup-btn.chosen:hover:not(:disabled), .dropoff-btn.chosen:hover:not(:disabled) { background: var(--accent-ink); border-color: var(--accent-ink); }
       .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
       .pickup-result.bad { background: rgba(178,63,43,0.15); }
       .pickup-result.plain { background: transparent; border: 1px solid rgba(127,127,127,0.3); }
