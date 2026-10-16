@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.102.0";
+const CARD_VERSION = "0.103.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1209,6 +1209,11 @@ class KatjaScheduleCard extends HTMLElement {
             // "Drive: none" (integration 0.34.0+): the server offers no
             // Drive time to this place (home, still TBC; _hasAddress).
             _noDrive: meta.drive === "none",
+            // "DriveFrom: water garden|Water Garden" (integration 0.46.0+):
+            // where a person said the drive to this event starts, as the
+            // server stores it (fr-2026-10-15-a). Absent: home. The picker
+            // starts on it (_driveFromAnswer).
+            _driveFrom: meta.drivefrom || "",
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1553,7 +1558,7 @@ class KatjaScheduleCard extends HTMLElement {
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "pickup" || k === "dropoff" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
-          || k === "title" || k === "drive") {
+          || k === "title" || k === "drive" || k === "drivefrom") {
         out[k] = m[2].trim();
       }
     }
@@ -2090,8 +2095,8 @@ class KatjaScheduleCard extends HTMLElement {
     this._openDetail(target);
   }
 
-  _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
-  _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _openDetail(ev) { this._uxSheetOpen(ev); this._detailEvent = ev; this._driveFromSaved = false; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._recheckLoading = false; this._actionResult = null; this._actionLoading = false; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
+  _closeDetail() { this._uxSheetClose(); this._detailEvent = null; this._driveFromSaved = false; this._pickupResult = null; this._pickupLoading = false; this._dropoffResult = null; this._dropoffLoading = false; this._recheckResult = null; this._actionResult = null; this._originPickerMode = false; this._dropHideMenu(); this._render(); }
   _openDayDetail(ds) { this._dayDetailDate = ds; this._detailEvent = null; this._render(); }
   _closeDayDetail() { this._dayDetailDate = null; this._render(); }
 
@@ -2397,6 +2402,41 @@ class KatjaScheduleCard extends HTMLElement {
   // live-traffic mode (no arrival_time → backend uses departure=now).
   _arrivalISOFromEvent(ev) {
     return ev?.start?.dateTime || null;
+  }
+
+  // "DriveFrom: water garden|Water Garden" → {alias, label}, or null when
+  // the server holds no start for the event (home). The integration writes
+  // the line only for one of the server's named starts, so this keeps no
+  // copy of the list or of the labels (fr-2026-10-15-a).
+  _driveFromAnswer(ev) {
+    const raw = String(ev?._driveFrom || "");
+    const cut = raw.indexOf("|");
+    if (cut <= 0) return null;
+    return { alias: raw.slice(0, cut).trim(), label: raw.slice(cut + 1).trim() };
+  }
+
+  // A tap on the address picker: the drive time from there, and the start
+  // remembered on the event (katja_schedule/set_drive_from), so the phone's
+  // drive card and leave-by reminder start there too. The server refuses an
+  // event whose drive has no start a person picks; then nothing is said.
+  _pickOrigin(ev, alias, remember) {
+    if (remember && ev?._eventId && alias) this._rememberDriveFrom(ev, alias);
+    return this._recheckDriveWithOrigin(ev, alias);
+  }
+
+  async _rememberDriveFrom(ev, alias) {
+    if (!this._hass) return;
+    try {
+      const result = await this._hass.callWS({
+        type: "katja_schedule/set_drive_from", event_id: ev._eventId,
+        date: (ev.start?.dateTime || ev.start?.date || "").slice(0, 10),
+        what: ev._title || ev.summary || "", drive_from: alias,
+      });
+      if (!result || !result.ok) return;
+      ev._driveFrom = result.drive_from && result.drive_from !== "home"
+        ? `${result.drive_from}|${result.label || result.drive_from}` : "";
+      if (this._detailEvent === ev) { this._driveFromSaved = true; this._render(); }
+    } catch (e) { /* nothing remembered; the drive time still shows */ }
   }
 
   async _recheckDriveWithOrigin(ev, originAlias) {
@@ -3401,7 +3441,7 @@ class KatjaScheduleCard extends HTMLElement {
     this.shadowRoot.querySelector(".recheck-drive")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-flight")?.addEventListener("click", () => this._recheckFlight(this._detailEvent));
     this.shadowRoot.querySelector(".recheck-check")?.addEventListener("click", () => this._recheckDrive(this._detailEvent));
-    this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._recheckDriveWithOrigin(this._detailEvent, btn.dataset.origin)));
+    this.shadowRoot.querySelectorAll(".origin-btn").forEach(btn => btn.addEventListener("click", () => this._pickOrigin(this._detailEvent, btn.dataset.origin, btn.dataset.remember === "1")));
     this.shadowRoot.querySelectorAll(".pickup-btn").forEach(btn => btn.addEventListener(
       "click", () => this._planPickup(this._detailEvent, btn.dataset.outcome, btn.dataset.driver || "")));
     this.shadowRoot.querySelectorAll(".dropoff-btn").forEach(btn => btn.addEventListener(
@@ -3868,13 +3908,28 @@ class KatjaScheduleCard extends HTMLElement {
     } else if (isDrive && hasArrow) {
       recheckSection = `<button class="recheck-btn recheck-drive" ${this._recheckLoading?"disabled":""}>${this._recheckLoading?"⏳ Checking...":"🔄 Recheck Drive Time"}</button>`;
     } else if (hasAddress) {
+      // fr-2026-10-15-a: the picker starts on where this event's drive
+      // starts (the integration's `DriveFrom:` line; none is home), with a
+      // button of its own when it is another named place, and a tap is
+      // remembered on the event (_pickOrigin).
+      const start = this._driveFromAnswer(ev);
+      const startAlias = start ? start.alias : "home";
+      const dis = this._recheckLoading ? "disabled" : "";
+      const originBtn = (alias, label) => {
+        const lit = alias === startAlias;
+        return `<button class="origin-btn${lit ? " chosen" : ""}" aria-pressed="${lit}" data-origin="${_esc(alias)}" data-remember="1" ${dis}>${label}</button>`;
+      };
+      const own = start && start.alias !== "home" && start.alias !== "nz consulate"
+        ? originBtn(start.alias, _esc(start.label)) : "";
       recheckSection = `
         <div class="origin-picker">
           <div class="origin-label">Check drive time from:</div>
           <div class="origin-buttons">
-            <button class="origin-btn" data-origin="home" ${this._recheckLoading?"disabled":""}>🏠 Home</button>
-            <button class="origin-btn" data-origin="nz consulate" ${this._recheckLoading?"disabled":""}>🏢 Work</button>
+            ${originBtn("home", "🏠 Home")}
+            ${originBtn("nz consulate", "🏢 Work")}
+            ${own}
           </div>
+          ${this._driveFromSaved ? '<div class="origin-saved" role="status">Remembered</div>' : ""}
           <div class="origin-hint">For a custom route, use the web app's chat agent</div>
         </div>
         ${this._recheckLoading ? '<div style="text-align:center;color:var(--muted);padding:8px">⏳ Checking...</div>' : ""}`;
@@ -4861,7 +4916,9 @@ class KatjaScheduleCard extends HTMLElement {
                     typeof it.ev.can_hide_by_rule === "boolean"
                       ? ` data-flow-can-hide-by-rule="${it.ev.can_hide_by_rule ? 1 : 0}"` : ""}${
                     typeof it.ev.can_look_up_drive === "boolean"
-                      ? ` data-flow-can-drive="${it.ev.can_look_up_drive ? 1 : 0}"` : ""}>
+                      ? ` data-flow-can-drive="${it.ev.can_look_up_drive ? 1 : 0}"` : ""}${
+                    it.ev.drive_from && it.ev.drive_from !== "home" && it.ev.drive_from_label
+                      ? ` data-flow-drive-from="${_esc(it.ev.drive_from)}|${_esc(it.ev.drive_from_label)}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -4901,6 +4958,9 @@ class KatjaScheduleCard extends HTMLElement {
       can_hide: d.flowCanHide === undefined ? undefined : d.flowCanHide === "1",
       can_hide_by_rule: d.flowCanHideByRule === undefined ? undefined : d.flowCanHideByRule === "1",
       can_look_up_drive: d.flowCanDrive === undefined ? undefined : d.flowCanDrive === "1",
+      // Where its drive starts, as the integration's line has it (the
+      // feed's `drive_from` and its words; fr-2026-10-15-a).
+      drive_from_line: d.flowDriveFrom || "",
     });
   }
 
@@ -4939,6 +4999,8 @@ class KatjaScheduleCard extends HTMLElement {
       _canHideByRule: ev.can_hide_by_rule,
       // And whether it offers Drive time (drive_time.drive_time_offered).
       _canLookUpDrive: ev.can_look_up_drive,
+      // And where its drive starts ("alias|label"; none is home).
+      _driveFrom: ev.drive_from_line || "",
       // The title itself; the summary above may carry _driveLabel's 🚗.
       _title: ev.what || "",
       _starred: true,
@@ -6308,6 +6370,8 @@ class KatjaScheduleCard extends HTMLElement {
       .origin-btn { flex: 1; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
       .origin-btn:hover { border-color: var(--accent); background: var(--accent-bg); }
       .origin-btn:disabled { opacity: 0.5; cursor: wait; }
+      .origin-btn.chosen, .origin-btn.chosen:hover { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
+      .origin-saved { font-size: 13px; font-weight: 600; color: var(--accent-ink); margin-bottom: 6px; }
       .origin-hint { font-size: 11px; color: var(--muted); }
 
       .recheck-result { margin-top: 12px; padding: 14px; border-radius: var(--radius-sm); font-size: 14px; line-height: 1.5; }
