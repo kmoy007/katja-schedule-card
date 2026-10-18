@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.103.0";
+const CARD_VERSION = "0.104.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -985,7 +985,31 @@ class KatjaScheduleCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._followSun();
     if (Date.now() - this._lastFetch > this._fetchInterval) this._fetchEvents();
+  }
+
+  // A dark palette at night (fr-2026-09-28-b, the kitchen screen): with
+  // `night_theme` set, the card wears it while Home Assistant's sun.sun is
+  // below the horizon and its own `theme` by day. A theme someone cycled
+  // to by hand stays until they reset it, which goes to the one for the
+  // hour. Without `night_theme` nothing changes, and while sun.sun says
+  // neither (missing, or unavailable while Home Assistant restarts) the
+  // card keeps what it has: a restart at night mustn't flash it light.
+  // `render: false` from setConfig, which draws anyway.
+  _followSun(render = true) {
+    if (!this._nightTheme) return;
+    const sun = this._hass?.states?.["sun.sun"]?.state;
+    if (sun !== "below_horizon" && sun !== "above_horizon") return;
+    const night = sun === "below_horizon";
+    if (night === this._isNight) return;
+    const was = this._defaultTheme;
+    this._isNight = night;
+    this._defaultTheme = night ? this._nightTheme : this._dayTheme;
+    if (this._theme === was) this._theme = this._defaultTheme;
+    // Even when a theme chosen by hand stays, the reset button now names
+    // the hour's theme.
+    if (render) this._render();
   }
 
   setConfig(config) {
@@ -1017,6 +1041,16 @@ class KatjaScheduleCard extends HTMLElement {
     // Remember the configured theme so the reset button can return to
     // it after the user has cycled away (fr-2026-05-21).
     this._defaultTheme = this._theme;
+    // `night_theme`: worn while the sun is down (`_followSun`). A name the
+    // card doesn't know is an error on the card, not a card that never
+    // goes dark with nothing saying why.
+    this._dayTheme = this._theme;
+    this._nightTheme = this._themeKey(config.night_theme);
+    if (config.night_theme && !this._nightTheme) {
+      throw new Error(`night_theme must be one of the card's themes: ${Object.keys(THEMES).join(", ")}.`);
+    }
+    this._isNight = false;
+    if (this._hass) this._followSun(false);
     this._showThemeToggle = !!config.show_theme_toggle;
     // view config locks the card to a single view (LOCKED_VIEWS).
     // `starred` makes a dedicated long-range Starred card (the D Flow

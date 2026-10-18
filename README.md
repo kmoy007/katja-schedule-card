@@ -36,6 +36,19 @@ Calendar entity names match the family members configured in the integration.
 
 `color` is optional. Events are coloured by person using the card's built-in person palette (the same colours as the web app): the first word of `Who`, so "Sam & Katja" is Sam, as named by the integration's `Person:` line (0.31.0+); a known person always wins. `color` only colours events from that calendar that have no known person.
 
+### A dark palette at night
+
+```yaml
+theme: light
+night_theme: dark     # any of the card's themes
+```
+
+- `night_theme` is worn while Home Assistant's `sun.sun` is below the horizon, and `theme` by day; the card switches within a moment of sunset and sunrise. `theme: none` instead follows Home Assistant's own theme, light or dark.
+- A theme cycled to by hand (`show_theme_toggle`) stays until it is reset, and reset goes to the theme for the hour.
+- While `sun.sun` is missing or unavailable (Home Assistant restarting) the card keeps the theme it has.
+- A `night_theme` the card doesn't know is shown as a configuration error on the card.
+- Panels with their own theme (`panel_themes`) and the preview's own dark palette are unchanged at night.
+
 ### Single-view mode
 
 Lock a card to one view for flexible dashboard layouts:
