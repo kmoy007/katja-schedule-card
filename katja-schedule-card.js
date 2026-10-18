@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.104.0";
+const CARD_VERSION = "0.105.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -6726,17 +6726,30 @@ class KatjaScheduleCard extends HTMLElement {
       .fam-scroll { overflow: auto; max-height: 72vh; border: 1px solid var(--border); border-radius: var(--radius-sm);
         overscroll-behavior: contain; }
       .fam-grid { width: 100%; min-width: 900px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+      /* The header row and the date column stay put while the grid scrolls
+         under them, so they are opaque in every theme: the card's colour
+         over the theme's opaque surface (--modal-bg). On the "none" theme
+         the card's colour is Home Assistant's, often see-through (glass
+         themes), and the day before showed through the header on the
+         kitchen screen (2026-10-17). */
       .fam-grid thead th { position: sticky; top: 0; z-index: 2; padding: 10px 10px; text-align: left;
-        background: var(--card-bg); border-bottom: 2px solid var(--border); }
+        background-color: var(--modal-bg); background-image: linear-gradient(var(--card-bg), var(--card-bg));
+        border-bottom: 2px solid var(--border); }
       .fam-col-h { color: var(--header-text); font-size: calc(20px + var(--katja-font-adjust)); font-weight: 800; }
       .fam-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
-      .fam-grid .fam-date { position: sticky; left: 0; z-index: 1; width: 128px; background: var(--card-bg); }
+      .fam-grid .fam-date { position: sticky; left: 0; z-index: 1; width: 128px;
+        background-color: var(--modal-bg); background-image: linear-gradient(var(--card-bg), var(--card-bg)); }
       .fam-grid thead .fam-date-h { z-index: 3; color: var(--header-text); font-size: calc(18px + var(--katja-font-adjust)); }
       .fam-row > th, .fam-row > td { padding: 8px 10px; vertical-align: top; border-bottom: 1px solid var(--border); cursor: pointer; }
       .fam-row > td { border-left: 1px solid var(--border); }
       .fam-row.week-start > th, .fam-row.week-start > td { border-top: 3px solid var(--border); }
-      .fam-row.is-weekend > th, .fam-row.is-weekend > td { background-image: linear-gradient(var(--weekend-bg), var(--weekend-bg)); }
-      .fam-row.is-today > th, .fam-row.is-today > td { background-image: linear-gradient(var(--today-bg), var(--today-bg)); }
+      .fam-row.is-weekend > td { background-image: linear-gradient(var(--weekend-bg), var(--weekend-bg)); }
+      .fam-row.is-today > td { background-image: linear-gradient(var(--today-bg), var(--today-bg)); }
+      /* The date column's tint goes over its opaque layers, not instead. */
+      .fam-row.is-weekend > th { background-image: linear-gradient(var(--weekend-bg), var(--weekend-bg)),
+        linear-gradient(var(--card-bg), var(--card-bg)); }
+      .fam-row.is-today > th { background-image: linear-gradient(var(--today-bg), var(--today-bg)),
+        linear-gradient(var(--card-bg), var(--card-bg)); }
       .fam-row.is-today > th { box-shadow: inset 6px 0 0 var(--accent); }
       .fam-row > th { text-align: left; font-weight: 400; }
       .fam-dow { display: block; color: var(--text-soft); font-size: calc(15px + var(--katja-font-adjust)); font-weight: 700; text-transform: uppercase; }
