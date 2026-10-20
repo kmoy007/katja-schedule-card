@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.105.0";
+const CARD_VERSION = "0.106.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1248,6 +1248,11 @@ class KatjaScheduleCard extends HTMLElement {
             // server stores it (fr-2026-10-15-a). Absent: home. The picker
             // starts on it (_driveFromAnswer).
             _driveFrom: meta.drivefrom || "",
+            // "ArriveBy: 2026-10-20T10:00:00-07:00" (integration 0.47.0+): when
+            // a drive to a flight leaving one of the household airports must
+            // get there, its departure less the airport buffer, as the server
+            // works it out (2026-10-20). Absent: the event's start.
+            _arriveBy: meta.arriveby || "",
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1592,7 +1597,7 @@ class KatjaScheduleCard extends HTMLElement {
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "pickup" || k === "dropoff" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
-          || k === "title" || k === "drive" || k === "drivefrom") {
+          || k === "title" || k === "drive" || k === "drivefrom" || k === "arriveby") {
         out[k] = m[2].trim();
       }
     }
@@ -2434,8 +2439,13 @@ class KatjaScheduleCard extends HTMLElement {
   // convergence loop and returns "Leave by X · arrives by Y" — same
   // experience the web app gives. All-day events fall through to
   // live-traffic mode (no arrival_time → backend uses departure=now).
+  // A flight leaving one of the household airports aims for the server's
+  // time to be at the airport (`_arriveBy`, the ArriveBy: line), never its
+  // take-off: "Leave by 11:03 · arrives by 11:30" was the drive for an
+  // 11:30 flight (bug-ios-20261020-075832). The card keeps no copy of the
+  // buffer.
   _arrivalISOFromEvent(ev) {
-    return ev?.start?.dateTime || null;
+    return ev?._arriveBy || ev?.start?.dateTime || null;
   }
 
   // "DriveFrom: water garden|Water Garden" → {alias, label}, or null when
@@ -2532,22 +2542,31 @@ class KatjaScheduleCard extends HTMLElement {
     return m ? m[1] : "";
   }
 
+  // Flight status. An event the schedule holds is sent by its id, as the
+  // web and the phone send it: the server reads the flight off the row and
+  // says in its own words why there is none to look up (a tag with no
+  // number: bug-ios-20261020-075832, integration 0.47.0). The
+  // card words no refusal of its own; only an integration too old to relay
+  // the id gets the card's line, as the Family view's does.
   async _recheckFlight(ev) {
     if (!this._hass) return;
-    const number = this._flightNumberToLookUp(ev);
-    if (!number) {
-      this._recheckResult = { ok: false, error: "This flight has no flight number to look up." };
-      this._render();
-      return;
-    }
     this._recheckLoading = true; this._render();
     try {
-      const line = this._flightLine(ev);
-      const msg = { type: "katja_schedule/refresh_flight", flight_number: number };
-      if (line) { msg.origin = line.origin; msg.destination = line.destination; }
-      msg.date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      const msg = { type: "katja_schedule/refresh_flight" };
+      if (ev._eventId) {
+        msg.event_id = ev._eventId;
+      } else {
+        const line = this._flightLine(ev);
+        msg.flight_number = this._flightNumberToLookUp(ev);
+        if (line) { msg.origin = line.origin; msg.destination = line.destination; }
+        msg.date = (ev.start?.dateTime || ev.start?.date || "").slice(0, 10);
+      }
       this._recheckResult = await this._hass.callWS(msg);
-    } catch (e) { this._recheckResult = { ok: false, error: e.message }; }
+    } catch (e) {
+      this._recheckResult = { ok: false, error: e?.code === "invalid_format"
+        ? "Update the Katja Schedule integration to 0.47.0 or later to check this flight."
+        : e.message };
+    }
     this._recheckLoading = false; this._render();
   }
 
@@ -5035,6 +5054,9 @@ class KatjaScheduleCard extends HTMLElement {
       _canLookUpDrive: ev.can_look_up_drive,
       // And where its drive starts ("alias|label"; none is home).
       _driveFrom: ev.drive_from_line || "",
+      // And when a drive to it must get there (a departing flight's
+      // airport buffer); none is its start.
+      _arriveBy: ev.drive_arrive_by || "",
       // The title itself; the summary above may carry _driveLabel's 🚗.
       _title: ev.what || "",
       _starred: true,
