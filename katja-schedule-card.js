@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.106.0";
+const CARD_VERSION = "0.107.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4971,7 +4971,9 @@ class KatjaScheduleCard extends HTMLElement {
                     typeof it.ev.can_look_up_drive === "boolean"
                       ? ` data-flow-can-drive="${it.ev.can_look_up_drive ? 1 : 0}"` : ""}${
                     it.ev.drive_from && it.ev.drive_from !== "home" && it.ev.drive_from_label
-                      ? ` data-flow-drive-from="${_esc(it.ev.drive_from)}|${_esc(it.ev.drive_from_label)}"` : ""}>
+                      ? ` data-flow-drive-from="${_esc(it.ev.drive_from)}|${_esc(it.ev.drive_from_label)}"` : ""}${
+                    it.ev.drive_arrive_by
+                      ? ` data-flow-drive-arrive-by="${_esc(it.ev.drive_arrive_by)}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -5014,6 +5016,9 @@ class KatjaScheduleCard extends HTMLElement {
       // Where its drive starts, as the integration's line has it (the
       // feed's `drive_from` and its words; fr-2026-10-15-a).
       drive_from_line: d.flowDriveFrom || "",
+      // And when a drive to it must get there (a departing flight's
+      // airport buffer; the feed's `drive_arrive_by`, 2026-10-20).
+      drive_arrive_by: d.flowDriveArriveBy || "",
     });
   }
 
