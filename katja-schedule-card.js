@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.107.0";
+const CARD_VERSION = "0.108.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4973,7 +4973,11 @@ class KatjaScheduleCard extends HTMLElement {
                     it.ev.drive_from && it.ev.drive_from !== "home" && it.ev.drive_from_label
                       ? ` data-flow-drive-from="${_esc(it.ev.drive_from)}|${_esc(it.ev.drive_from_label)}"` : ""}${
                     it.ev.drive_arrive_by
-                      ? ` data-flow-drive-arrive-by="${_esc(it.ev.drive_arrive_by)}"` : ""}>
+                      ? ` data-flow-drive-arrive-by="${_esc(it.ev.drive_arrive_by)}"` : ""}${
+                    "starts_at" in it.ev
+                      ? ` data-flow-starts-at="${_esc(it.ev.starts_at || "")}" data-flow-ends-at="${_esc(it.ev.ends_at || "")}"` : ""}${
+                    typeof it.ev.person === "string"
+                      ? ` data-flow-person="${_esc(it.ev.person)}"` : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -5019,16 +5023,31 @@ class KatjaScheduleCard extends HTMLElement {
       // And when a drive to it must get there (a departing flight's
       // airport buffer; the feed's `drive_arrive_by`, 2026-10-20).
       drive_arrive_by: d.flowDriveArriveBy || "",
+      // When it starts and ends (the feed's `starts_at` / `ends_at`): ""
+      // with no clock time, absent from an older server.
+      starts_at: d.flowStartsAt,
+      ends_at: d.flowEndsAt,
+      // Whose colour it is (renderer.person_key), so personKeyFor's own
+      // reading answers only an older server, as everywhere else.
+      person: d.flowPerson,
     });
   }
 
   _starredEventToDetailShape(ev) {
     const date = ev.date || "";
     const dtEnd = ev.dt_end || "";
-    const isAllDay = !ev.time || /^all\s*day/i.test(ev.time || "");
-    const start = isAllDay ? { date } : { dateTime: `${date}T00:00:00` };
+    // When it starts and ends: the feed's `starts_at` / `ends_at`, the
+    // server's reading of its time (null or "" with no clock time; no end
+    // for one time), so the sheet shows its time and Drive time aims for
+    // it. An older server's feed sends neither, and its timed event runs
+    // from midnight to 23:59, as every one did until 0.108.0.
+    const fromServer = ev.starts_at !== undefined;
+    const isAllDay = fromServer ? !ev.starts_at : (!ev.time || /^all\s*day/i.test(ev.time || ""));
+    const start = isAllDay ? { date }
+      : { dateTime: fromServer ? ev.starts_at : `${date}T00:00:00` };
     const end = isAllDay
       ? { date: dtEnd ? this._isoAddDays(dtEnd, 1) : this._isoAddDays(date, 1) }
+      : fromServer ? (ev.ends_at ? { dateTime: ev.ends_at } : {})
       : { dateTime: `${date}T23:59:00` };
     const desc = [];
     if (ev.who) desc.push(`Who: ${ev.who}`);
