@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.109.0";
+const CARD_VERSION = "0.110.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -4988,7 +4988,14 @@ class KatjaScheduleCard extends HTMLElement {
                     "starts_at" in it.ev
                       ? ` data-flow-starts-at="${_esc(it.ev.starts_at || "")}" data-flow-ends-at="${_esc(it.ev.ends_at || "")}"` : ""}${
                     typeof it.ev.person === "string"
-                      ? ` data-flow-person="${_esc(it.ev.person)}"` : ""}>
+                      ? ` data-flow-person="${_esc(it.ev.person)}"` : ""}${
+                    it.ev.flight
+                      ? ` data-flow-flight="${_esc(this._feedFlightLine(it.ev.flight))}"` : ""}${
+                    this._feedAnswerLine(it.ev.pickup)
+                      ? ` data-flow-pickup="${_esc(this._feedAnswerLine(it.ev.pickup))}"` : ""}${
+                    this._feedAnswerLine(it.ev.dropoff)
+                      ? ` data-flow-dropoff="${_esc(this._feedAnswerLine(it.ev.dropoff))}"` : ""}${
+                    it.ev.live_flight ? ' data-flow-live="1"' : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
             ${it.continuesRight ? '<span class="flow-arrow">›</span>' : ""}
@@ -5041,7 +5048,30 @@ class KatjaScheduleCard extends HTMLElement {
       // Whose colour it is (renderer.person_key), so personKeyFor's own
       // reading answers only an older server, as everywhere else.
       person: d.flowPerson,
+      // Its flight and the ride answers that hold, as the integration's
+      // lines have them (`_feedFlightLine`, `_feedAnswerLine`), and whether
+      // it is the live-status copy of a delayed flight.
+      flight_line: d.flowFlight || "",
+      pickup_line: d.flowPickup || "",
+      dropoff_line: d.flowDropoff || "",
+      live: d.flowLive === "1",
     });
+  }
+
+  // The Starred feed's flight tag and ride answers as the integration
+  // writes them on a list row (calendar.py's `Flight:`, `Pickup:` and
+  // `Dropoff:` lines), so the sheet a chip opens reads them as the row's
+  // does: its airport (`_flightAirportInfo`), Flight status, and the ride
+  // question with the household's answer lit. Until 0.110.0 the feed had no
+  // flight, so a departure's Starred sheet offered no drive to its airport.
+  // tests/test_ha_card_drive_from.py holds a chip's sheet to its list row's.
+  _feedFlightLine(f) {
+    return f ? `${f.number || ""} ${f.origin || ""}→${f.destination || ""}` : "";
+  }
+  _feedAnswerLine(a) {
+    if (!a || !a.outcome) return "";
+    if (a.outcome !== "drive") return String(a.outcome);
+    return a.driver ? `drive:${a.driver}` : "";
   }
 
   _starredEventToDetailShape(ev) {
@@ -5068,6 +5098,7 @@ class KatjaScheduleCard extends HTMLElement {
     if (dtEnd && dtEnd > date) desc.push(`DtEnd: ${dtEnd}`);
     desc.push("Starred: 1");
     if (ev.recurring_event_id) desc.push(`RecurringEventId: ${ev.recurring_event_id}`);
+    if (ev.flight_line) desc.push(`Flight: ${ev.flight_line}`);
     return {
       summary: this._driveLabel(ev.what),
       location: ev.where || "",
@@ -5094,6 +5125,12 @@ class KatjaScheduleCard extends HTMLElement {
       _arriveBy: ev.drive_arrive_by || "",
       // The title itself; the summary above may carry _driveLabel's 🚗.
       _title: ev.what || "",
+      // Its flight (the `Flight:` line above) and ride answers, as a list
+      // row's lines give them.
+      _flight: ev.flight_line || "",
+      _pickup: ev.pickup_line || "",
+      _dropoff: ev.dropoff_line || "",
+      _live: !!ev.live,
       _starred: true,
       _dtEnd: dtEnd,
       _recurringEventId: ev.recurring_event_id || "",
