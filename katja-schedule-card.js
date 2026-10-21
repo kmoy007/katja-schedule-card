@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.108.0";
+const CARD_VERSION = "0.109.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2444,8 +2444,19 @@ class KatjaScheduleCard extends HTMLElement {
   // take-off: "Leave by 11:03 · arrives by 11:30" was the drive for an
   // 11:30 flight (bug-ios-20261020-075832). The card keeps no copy of the
   // buffer.
+  // A drive row aims for its end, when the drive gets there, as the web's
+  // sheet does (`sheetDriveArrival`, bug-20260525-094139); until 0.109.0
+  // the card aimed it at its start, when the drive should be leaving. Its
+  // end is the integration's, where one time is half an hour, as on the
+  // web; a one-time row from the Starred feed, which sends no end, gets
+  // the same half hour. tests/test_drive_row_arrival.py holds the card's
+  // answer to the web's.
   _arrivalISOFromEvent(ev) {
-    return ev?._arriveBy || ev?.start?.dateTime || null;
+    const start = ev?.start?.dateTime || null;
+    if (this._isDrive(ev?.summary || "")) {
+      return ev?.end?.dateTime || (start && new Date(Date.parse(start) + 30 * 60000).toISOString());
+    }
+    return ev?._arriveBy || start;
   }
 
   // "DriveFrom: water garden|Water Garden" → {alias, label}, or null when
