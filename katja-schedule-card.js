@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.110.0";
+const CARD_VERSION = "0.111.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -962,6 +962,11 @@ class KatjaScheduleCard extends HTMLElement {
     // grid alone (the A, B, C and E sub-layouts went in fr-2026-05-20).
     this._starredEvents = [];
     this._starredFetched = false;
+    // Asked for at least once: the view asks when first drawn, then the
+    // five-minute tick asks again, whether or not the last answer was the
+    // feed. Gated on the answer instead, a refused feed asked again on
+    // every render it caused, without pause (0.111.0).
+    this._starredTried = false;
     this._starredLoading = false;
     this._starredError = null;
     // Family view (fr-2026-09-28-b): one row per day, one column per
@@ -1294,7 +1299,7 @@ class KatjaScheduleCard extends HTMLElement {
     this._fetchPendingProposals();
     // Refresh starred events alongside if the Starred view has ever
     // been loaded — keeps the wall display current with web-side stars.
-    if (this._starredFetched) this._fetchStarredEvents();
+    if (this._starredTried) this._fetchStarredEvents();
     // And the Family grid, once its view has been shown, so the wall
     // follows the schedule within one sync cycle.
     if (this._familyFetched && opts.family !== false) this._fetchFamilyGrid();
@@ -3232,7 +3237,7 @@ class KatjaScheduleCard extends HTMLElement {
       body = this._renderSchedule(grouped);
     } else if (this._view === "starred") {
       body = this._renderStarredView();
-      if (!this._starredFetched && !this._starredLoading) {
+      if (!this._starredTried && !this._starredLoading) {
         this._fetchStarredEvents();
       }
     } else if (this._view === "family") {
@@ -4661,14 +4666,22 @@ class KatjaScheduleCard extends HTMLElement {
   // ============================================================
   async _fetchStarredEvents() {
     if (!this._hass || this._starredLoading) return;
+    this._starredTried = true;
     this._starredLoading = true;
     this._starredError = null;
     try {
       const result = await this._hass.connection.sendMessagePromise({
         type: "katja_schedule/list_starred_events",
       });
-      this._starredEvents = (result && result.events) || [];
-      this._starredFetched = true;
+      // The integration relays an error the server sent (a 401 for a
+      // changed token) as it came: say so, as the Family view does,
+      // rather than draw "No starred events" (0.111.0).
+      if (result && Array.isArray(result.events)) {
+        this._starredEvents = result.events;
+        this._starredFetched = true;
+      } else {
+        this._starredError = (result && result.error) || "The schedule app sent no starred events.";
+      }
     } catch (e) {
       this._starredError = String((e && e.message) || e || "fetch failed");
     } finally {
