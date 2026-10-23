@@ -6,7 +6,7 @@ It must stay aligned with the main web app at `kmoy007/katja-schedule`.
 ## Alignment Rule
 
 - **This card must match the web app's UI capabilities.** When the web app adds views, event interactions, drive/flight features, or layout changes, implement them here in the same session.
-- Check the main app's `CLAUDE.md` and `project_architecture.md` (in the Claude memory) for the full architecture.
+- Check the main app's `CLAUDE.md` and `project_architecture.md` (in the Claude memory) for the full architecture. The colour, contrast and fade rules the card shares with the web are the main app's `docs/visual-design.md`, and the Family view's rules its `docs/family-month-grid.md`.
 
 ## Key Conventions
 
