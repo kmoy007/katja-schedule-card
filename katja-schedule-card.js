@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.112.0";
+const CARD_VERSION = "0.113.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -2096,7 +2096,7 @@ class KatjaScheduleCard extends HTMLElement {
       [".recheck-drive", () => ["sheet.recheck"]],
       [".origin-btn", el => ["drive.from-" + (origins[el.dataset.origin] || "other")]],
       [".action-update", () => ["drive.update"]],
-      [".action-add-drive", () => ["drive.add-row"]],
+      [".drive-driver-btn", () => ["drive.add-row"]],
       [".pickup-btn", el => ["pickup." + (el.dataset.outcome === "drive"
           ? (el.dataset.driver || "drive").toLowerCase().replace(/[^a-z0-9]+/g, "-")
           : (el.dataset.outcome || "other").replace(/_/g, "-")), { settles: "pickup.question" }]],
@@ -2112,6 +2112,7 @@ class KatjaScheduleCard extends HTMLElement {
       [".hm-back", () => ["hide.back", { settles: "hide.menu" }]],
       [".unhide-event-btn", () => ["sheet.unhide"]],
       [".follow-rules-btn", () => ["sheet.follow_rules"]],
+      [".detach-event-btn", () => ["sheet.detach"]],
       [".modal-star", () => ["sheet.star"]],
       [".inline-apply", () => ["proposal.approve"]],
       [".inline-reject", () => ["proposal.reject"]],
@@ -3571,19 +3572,46 @@ class KatjaScheduleCard extends HTMLElement {
         `Route: ${r.distance_text} via ${r.summary||"—"} (includes ${r.traffic_note||"traffic"} estimate).`
       );
     });
-    this.shadowRoot.querySelector(".action-add-drive")?.addEventListener("click", () => {
-      const r = this._recheckResult, ev = this._detailEvent;
-      if (!r || !ev) return;
-      const o = r.origin||{}, d = r.destination||{};
-      const evDate = (ev.start?.dateTime||ev.start?.date||"").slice(0,10);
-      const evTime = this._formatTime(ev);
-      this._sendAgentAction(
-        `Add a 🚗 drive row on ${evDate} before "${ev.summary}" (${evTime}). ` +
-        `Drive from ${o.resolved||o.input||"?"} to ${d.resolved||d.input||"?"}, ` +
-        `${r.duration_text}, ${r.distance_text} via ${r.summary||"—"}. ` +
-        `This includes ${r.traffic_note||"traffic"} estimate. Set departure time so arrival is before ${evTime}.`
-      );
-    });
+    // Add drive row (docs/attached-events.md, stage 3): a chip names who
+    // drives; the server builds the 🚗 row from the rechecked drive's
+    // leave-by and queues it as this event's child, worded there.
+    this.shadowRoot.querySelectorAll(".drive-driver-btn").forEach(btn => btn.addEventListener(
+      "click", () => this._proposeDriveRow(this._detailEvent, btn.dataset.driver || "")));
+    this.shadowRoot.querySelector(".detach-event-btn")?.addEventListener("click", () => this._detachFromDetail(this._detailEvent));
+  }
+
+  // Add drive row (stage 3): the server words the 🚗 row and attaches it
+  // to the event (`app._propose_drive_row`, through
+  // katja_schedule/propose_drive_row); the card sends who drives and the
+  // rechecked drive's leave-by and route, and prints the server's answer.
+  async _proposeDriveRow(ev, driver) {
+    const r = this._recheckResult;
+    if (!this._hass || !ev?._eventId || !r) return;
+    this._actionLoading = true; this._render();
+    try {
+      const o = r.origin || {}, d = r.destination || {};
+      const result = await this._hass.callWS({
+        type: "katja_schedule/propose_drive_row", event_id: ev._eventId, driver,
+        // The lookup's leave-by; a live-now lookup's is its own time. The
+        // server refuses one that isn't before the start, in words.
+        leave_by: r.recommended_departure_local
+          || (r.departure_time_resolved !== "now" && r.departure_time_resolved) || r.fetched_at || "",
+        where: `${o.resolved || o.input || "?"} → ${d.resolved || d.input || "?"}`,
+      });
+      this._actionResult = result && result.ok
+        ? { ok: true, text: `Queued ${result.what} for Review` }
+        : { ok: false, error: (result && (result.message || result.error)) || "refused" };
+    } catch (e) { this._actionResult = { ok: false, error: e.message }; }
+    this._actionLoading = false; this._render();
+    this._fetchEvents();
+  }
+
+  // Detach (stage 3): the row stops following the event it was attached
+  // to and stays where it is (katja_schedule/detach_event).
+  async _detachFromDetail(ev) {
+    if (!this._hass || !ev?._eventId) return;
+    await this._doReviewAction("katja_schedule/detach_event", {event_id: ev._eventId}, [ev._eventId]);
+    this._closeDetail();
   }
 
   // ====================== REVIEW MODAL ======================
@@ -3875,6 +3903,12 @@ class KatjaScheduleCard extends HTMLElement {
     if (evId && ev._choice) {
       hideSection += `<button class="follow-rules-btn" ${this._actionLoading?"disabled":""}>Let the rules decide</button>`;
     }
+    // A child row (its `AttachedTo:` line) offers Detach (docs/attached-
+    // events.md, stage 3); a row still waiting to be added has nothing
+    // to detach from.
+    if (evId && !pp && ev._attachedTo) {
+      hideSection += `<button class="detach-event-btn" ${this._actionLoading?"disabled":""}>Detach</button>`;
+    }
 
     // Recheck section. Flight events get TWO affordances side-by-side
     // (matches the web's event-sheet UX from bug-20260505-122645):
@@ -4065,7 +4099,18 @@ class KatjaScheduleCard extends HTMLElement {
               : "open the flight's own row and use <strong>How are they getting to the airport?</strong>";
             actions = `<div class="pickup-instead">To put the ride to the airport on the schedule, ${where}: it leaves the time the airport needs and works on the flight's one ride row.</div>`;
           } else {
-            actions = `<button class="action-btn action-add-drive" ${this._actionLoading?"disabled":""}>${this._actionLoading?"⏳ Adding...": `＋ Add ${_esc(r.duration_text)} drive row before this event (with traffic)`}</button>`;
+            // Add drive row (stage 3): the chips name who drives, and the
+            // server queues the 🚗 row as this event's child, worded there
+            // (`_proposeDriveRow`). The airport questions' chips. A row the
+            // schedule doesn't hold yet (no id) has nothing to attach to.
+            const dis = this._actionLoading ? "disabled" : "";
+            const chips = this.constructor.PICKUP_DRIVERS
+              .map(dr => `<button class="drive-driver-btn" data-driver="${_esc(dr)}" ${dis}>🚗 ${_esc(dr)}</button>`)
+              .concat([`<button class="drive-driver-btn" data-driver="Taxi" ${dis}>🚕 Taxi / rideshare</button>`])
+              .join("");
+            actions = ev._eventId
+              ? `<div class="add-drive-row"><div class="pickup-q">${this._actionLoading ? "⏳ Adding…" : `Add a ${_esc(r.duration_text)} drive row before this event: who drives?`}</div><div class="pickup-buttons">${chips}</div></div>`
+              : "";
           }
         }
 
@@ -6518,7 +6563,9 @@ class KatjaScheduleCard extends HTMLElement {
       .hm-buttons button:disabled { opacity: 0.5; cursor: not-allowed; }
       .unhide-event-btn { display: block; width: 100%; margin-top: 8px; padding: 12px; border: 1px solid #2E8B57; border-radius: var(--radius-sm); background: var(--label-unhide-fill); color: var(--label-unhide); font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; }
       .unhide-event-btn:hover { background: var(--label-unhide-hover); }
-      .follow-rules-btn { display: block; width: 100%; margin-top: 8px; padding: 10px; border: 1px solid var(--divider-color, #ccc); border-radius: var(--radius-sm); background: none; color: inherit; font-family: var(--font); font-size: 14px; cursor: pointer; }
+      .follow-rules-btn, .detach-event-btn { display: block; width: 100%; margin-top: 8px; padding: 10px; border: 1px solid var(--divider-color, #ccc); border-radius: var(--radius-sm); background: none; color: inherit; font-family: var(--font); font-size: 14px; cursor: pointer; }
+      .add-drive-row { margin-top: 10px; }
+      .add-drive-row .pickup-q { margin-bottom: 8px; font-size: 13px; }
       .unhide-event-btn:disabled { opacity: 0.5; cursor: wait; }
       .recheck-btn:hover { filter: brightness(1.15); }
       .recheck-btn:disabled { opacity: 0.5; cursor: wait; }
@@ -6530,8 +6577,8 @@ class KatjaScheduleCard extends HTMLElement {
       .pickup-q { font-size: 16px; font-weight: 700; }
       .pickup-hint { font-size: 12px; color: var(--muted); margin: 3px 0 10px; }
       .pickup-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-      .pickup-btn, .dropoff-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
-      .pickup-btn[disabled], .dropoff-btn[disabled] { opacity: 0.5; cursor: default; }
+      .pickup-btn, .dropoff-btn, .drive-driver-btn { flex: 1 1 auto; min-width: 130px; padding: 12px; border: 2px solid var(--border); border-radius: var(--radius-sm); background: transparent; font-family: var(--font); font-size: 14px; font-weight: 600; cursor: pointer; color: var(--accent-ink); }
+      .pickup-btn[disabled], .dropoff-btn[disabled], .drive-driver-btn[disabled] { opacity: 0.5; cursor: default; }
       .pickup-btn.chosen, .dropoff-btn.chosen { background: var(--accent-ink); color: var(--card-bg); border-color: var(--accent-ink); }
       .pickup-btn.chosen:hover:not(:disabled), .dropoff-btn.chosen:hover:not(:disabled) { background: var(--accent-ink); border-color: var(--accent-ink); }
       .pickup-result { margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; background: rgba(46,139,87,0.12); }
