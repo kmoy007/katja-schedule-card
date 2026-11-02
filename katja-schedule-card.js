@@ -5,7 +5,7 @@
  * Tap event → detail modal with drive/flight recheck + action buttons.
  */
 
-const CARD_VERSION = "0.111.0";
+const CARD_VERSION = "0.112.0";
 // Day View constants — kept aligned with the web template's
 // CAL_HOUR_PX / CAL_DAY_START_HOUR / CAL_DAY_END_HOUR (see
 // templates/schedule.html ~line 5457) so the two surfaces render
@@ -1258,6 +1258,12 @@ class KatjaScheduleCard extends HTMLElement {
             // get there, its departure less the airport buffer, as the server
             // works it out (2026-10-20). Absent: the event's start.
             _arriveBy: meta.arriveby || "",
+            // "AttachedTo: <parent id>|<role>|<words>" (integration 0.50.0+):
+            // the link a child row carries, in the server's words ("to BU15
+            // EA…", "before DL1194 leaves"; docs/attached-events.md, stage 2).
+            // Printed under the row and on its sheet as it comes. Absent: no
+            // link. `_parseAttachedLine`.
+            _attachedTo: this._parseAttachedLine(meta.attachedto),
             // "Notes: …" (integration 0.29.0+) — the event's own
             // commentary. The Details row used to print this whole
             // metadata block instead, so the household read `Status:`,
@@ -1588,6 +1594,17 @@ class KatjaScheduleCard extends HTMLElement {
     return `${String(h).padStart(2, "0")}:${min}:00`;
   }
 
+  // "AttachedTo: <parent id>|<role>|<words>" → {parentId, role, words}, or
+  // null for no line. The words are last, so a pipe in them is kept. The
+  // list row, the sheet and a Starred chip's sheet all read the link here.
+  _parseAttachedLine(line) {
+    if (!line) return null;
+    const i = line.indexOf("|"), j = i < 0 ? -1 : line.indexOf("|", i + 1);
+    if (i < 0 || j < 0) return null;
+    const words = line.slice(j + 1).trim();
+    return words ? { parentId: line.slice(0, i), role: line.slice(i + 1, j), words } : null;
+  }
+
   _parseEventMeta(description) {
     const out = {};
     if (!description) return out;
@@ -1602,7 +1619,8 @@ class KatjaScheduleCard extends HTMLElement {
       if (k === "who" || k === "person" || k === "status" || k === "where" || k === "flight"
           || k === "source" || k === "kind" || k === "eventid" || k === "dtend" || k === "starred"
           || k === "pickup" || k === "dropoff" || k === "live" || k === "notes" || k === "was" || k === "cancelled" || k === "choice" || k === "version" || k === "recurringeventid"
-          || k === "title" || k === "drive" || k === "drivefrom" || k === "arriveby") {
+          || k === "title" || k === "drive" || k === "drivefrom" || k === "arriveby"
+          || k === "attachedto") {
         out[k] = m[2].trim();
       }
     }
@@ -4145,6 +4163,7 @@ class KatjaScheduleCard extends HTMLElement {
           ${pendingBanner}
           <div class="modal-body">${this._hideMenu ? this._renderHideMenu(ev) : `
             <div class="modal-row"><span class="modal-label">When</span><span>${_esc(dateLabel)}, ${_esc(time)}${ev._was ? `<span class="modal-was"> · was ${_esc(ev._was)}</span>` : ""}</span></div>
+            ${ev._attachedTo ? `<div class="modal-row modal-attached"><span class="modal-label">Attached</span><span>${_esc(ev._attachedTo.words)}</span></div>` : ""}
             ${location ? `<div class="modal-row"><span class="modal-label">Where</span><span>${this._linkifyWhere(location)}</span></div>` : ""}
             ${notes ? `<div class="modal-row"><span class="modal-label">Details</span><span class="modal-desc">${_esc(notes)}</span></div>` : ""}
             <div class="modal-row"><span class="modal-label">Who</span><span>${_esc(ev._label || "—")}</span></div>
@@ -5008,6 +5027,8 @@ class KatjaScheduleCard extends HTMLElement {
                       ? ` data-flow-pickup="${_esc(this._feedAnswerLine(it.ev.pickup))}"` : ""}${
                     this._feedAnswerLine(it.ev.dropoff)
                       ? ` data-flow-dropoff="${_esc(this._feedAnswerLine(it.ev.dropoff))}"` : ""}${
+                    it.ev.attached_to && it.ev.attached_to.words
+                      ? ` data-flow-attached-to="${_esc(it.ev.attached_to.parent_id || "")}|${_esc(it.ev.attached_to.role || "")}|${_esc(it.ev.attached_to.words)}"` : ""}${
                     it.ev.live_flight ? ' data-flow-live="1"' : ""}>
             ${it.continuesLeft ? '<span class="flow-arrow">‹</span>' : ""}
             <span class="flow-event-title">${_esc(it.ev.what || "")}</span>
@@ -5067,6 +5088,9 @@ class KatjaScheduleCard extends HTMLElement {
       flight_line: d.flowFlight || "",
       pickup_line: d.flowPickup || "",
       dropoff_line: d.flowDropoff || "",
+      // The link it carries, as the integration's AttachedTo: line has it
+      // (the feed's `attached_to`; docs/attached-events.md, stage 2).
+      attached_line: d.flowAttachedTo || "",
       live: d.flowLive === "1",
     });
   }
@@ -5143,6 +5167,8 @@ class KatjaScheduleCard extends HTMLElement {
       _flight: ev.flight_line || "",
       _pickup: ev.pickup_line || "",
       _dropoff: ev.dropoff_line || "",
+      // And whose it is (`_parseAttachedLine`), printed on the sheet.
+      _attachedTo: this._parseAttachedLine(ev.attached_line || ""),
       _live: !!ev.live,
       _starred: true,
       _dtEnd: dtEnd,
@@ -5309,7 +5335,10 @@ class KatjaScheduleCard extends HTMLElement {
     const summaryPrefix = isContinuation ? "↳ " : "";
     const starIndicator = ev._starred ? `<span class="row-star-indicator" title="Starred">★</span>` : "";
     const spanChip = isSpanStart ? `<span class="multi-day-chip" title="Continues through ${_esc(ev._dtEnd)}">→ ${_esc(ev._dtEnd)}</span>` : "";
-    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
+    // A child row says whose it is, in the server's words (the integration's
+    // AttachedTo: line; docs/attached-events.md, stage 2).
+    const attachedLine = ev._attachedTo ? `<div class="event-attached">${_esc(ev._attachedTo.words)}</div>` : "";
+    return `<div class="event${isDrive?" is-drive":""}${pendingClass}${orphanClass}${contClass}" data-event-idx="${idx}" style="${flagStyle}${contStyle}"><div class="event-time">${this._formatTime(ev)}</div><div class="event-body"><div class="event-summary"><span class="person-dot" style="background:${colorAttr}"></span>${summaryPrefix}${_esc(summary)} ${flightBadge}${pendingTag}${orphanTag}${flaggedTag}${spanChip}${starIndicator}</div>${attachedLine}${ev.location?`<div class="event-location">${_esc(ev.location)}</div>`:""}</div></div>`;
   }
 
   // `opts.zoomed` adds the .is-zoomed sizing class and drops the corner
@@ -5931,6 +5960,7 @@ class KatjaScheduleCard extends HTMLElement {
       .day.is-today .event-summary { font-size: calc(var(--event-summary-size) + 3px); color: var(--header-text); }
       .event-summary .person-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
       .event-location { font-size: 14px; color: var(--muted); margin-top: 2px; }
+      .event-attached { font-size: 13px; color: var(--muted); margin-top: 1px; }
       .event.is-drive .event-summary { font-style: italic; color: var(--muted); font-weight: 400; }
       .event.is-drive .event-time { color: var(--muted); opacity: 0.6; }
       .flight-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--accent-bg); color: var(--accent-ink); font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-sm); }
